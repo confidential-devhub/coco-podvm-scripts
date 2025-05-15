@@ -4,6 +4,8 @@ QCOW2=~/.local/share/libvirt/images/rhel9.5-created-ks.qcow2
 IMAGE_CERTIFICATE_PEM=/home/eesposit/openshift/coco-podvm-scripts/scripts/certs/public_key.pem
 IMAGE_PRIVATE_KEY=/home/eesposit/openshift/coco-podvm-scripts/scripts/certs/private.key
 
+sudo podman build coco-podvm .
+
 sudo podman run --rm \
     --privileged \
     -v $QCOW2:/disk.qcow2 \
