@@ -80,15 +80,15 @@ function print_params()
 function handle_ctrlc()
 {
     if [[ $root_mounted == 1 ]]; then
-        sudo umount $VERITY_FOLDER/mnt
+        umount $VERITY_FOLDER/mnt
     fi
     if [[ $esp_mounted == 1 ]]; then
-        sudo umount $VERITY_FOLDER/mnt
+        umount $VERITY_FOLDER/mnt
     fi
     if [[ $nbd_mounted == 1 ]]; then
-        sudo qemu-nbd --disconnect $NBD_DEVICE
+        qemu-nbd --disconnect $NBD_DEVICE
     fi
-    # sudo rm -rf $VERITY_FOLDER
+    # rm -rf $VERITY_FOLDER
     cd $here
     exit 0
 }
@@ -143,23 +143,23 @@ function find_efi_root_part()
 
 function fix_bootx_cmdline()
 {
-    sudo mount /dev/$EFI_PN mnt
+    mount /dev/$EFI_PN mnt
     esp_mounted=1
     BOOTX_FILE=mnt/EFI/redhat/BOOTX64.CSV
-    cat $BOOTX_FILE  | iconv -f UCS-2 | sudo tee tmp-bootx > /dev/null
-    sudo sed -i "s/\( *\),UKI/ $CONSOLE_CMDLINE\1,UKI/" tmp-bootx
-    sudo mv $BOOTX_FILE $BOOTX_FILE.orig
-    cat tmp-bootx |  iconv -t UCS-2 | sudo tee $BOOTX_FILE > /dev/null
+    cat $BOOTX_FILE  | iconv -f UCS-2 | tee tmp-bootx > /dev/null
+    sed -i "s/\( *\),UKI/ $CONSOLE_CMDLINE\1,UKI/" tmp-bootx
+    mv $BOOTX_FILE $BOOTX_FILE.orig
+    cat tmp-bootx |  iconv -t UCS-2 | tee $BOOTX_FILE > /dev/null
     cat $BOOTX_FILE
-    sudo rm -rf tmp-bootx
+    rm -rf tmp-bootx
     esp_mounted=0
-    sudo umount mnt
+    umount mnt
 }
 
 function call_fsck()
 {
-    fs_type=$(sudo blkid -o value -s TYPE /dev/$ROOT_PN)
-    sudo fsck.$fs_type -p /dev/$ROOT_PN
+    fs_type=$(blkid -o value -s TYPE /dev/$ROOT_PN)
+    fsck.$fs_type -p /dev/$ROOT_PN
     echo "fsck applied"
 }
 
@@ -183,7 +183,7 @@ function apply_dmverity()
     VerityMatchKey=root
     Weight=1000" > $WORKDIR/root.conf
 
-    sudo systemd-repart $NBD_DEVICE --dry-run=no --definitions=$WORKDIR --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > $WORKDIR/roothash.txt
+    systemd-repart $NBD_DEVICE --dry-run=no --definitions=$WORKDIR --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > $WORKDIR/roothash.txt
     RH=$(cat $WORKDIR/roothash.txt)
     rm -rf $WORKDIR
 
@@ -202,31 +202,31 @@ function create_uki_addon()
 {
     UKI_FOLDER=mnt/EFI/Linux
     ADDON_NAME=verity.addon.efi
-    sudo mount /dev/$EFI_PN mnt
+    mount /dev/$EFI_PN mnt
     esp_mounted=1
     efi_files=($UKI_FOLDER/*.efi)
     if [[ ${#efi_files[@]} -eq 1 && -f "${efi_files[0]}" ]]; then
         UKI_NAME=${efi_files[0]}
         echo "Found UKI $UKI_NAME"
-        sudo mkdir -p "$UKI_NAME.extra.d"
+        mkdir -p "$UKI_NAME.extra.d"
     else
         echo "Error: Either no .efi file or multiple .efi files found."
         echo "Cannot create the UKI addon."
         exit 1
     fi
     cd $UKI_NAME.extra.d
-    sudo rm -f $ADDON_NAME
+    rm -f $ADDON_NAME
 
     if [[ -n "$SB_PRIVATE_KEY" && -n "$SB_CERTIFICATE" ]]; then
         ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
         echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
     fi
-    sudo /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME $ADDON_OPTIONS
+    /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME $ADDON_OPTIONS
     echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
-    sudo /usr/lib/systemd/ukify inspect $ADDON_NAME
+    /usr/lib/systemd/ukify inspect $ADDON_NAME
     cd - > /dev/null
     esp_mounted=0
-    sudo umount mnt
+    umount mnt
 }
 
 print_params
@@ -241,10 +241,11 @@ cd $VERITY_FOLDER
 
 mkdir mnt
 
-sudo modprobe nbd
+modprobe nbd
 nbd_mounted=1
-sudo qemu-nbd -c $NBD_DEVICE -f $DISK_FORMAT $DISK
-sudo udevadm settle
+qemu-nbd -c $NBD_DEVICE -f $DISK_FORMAT $DISK
+udevadm settle
+sleep 2
 
 # Step 1. Find the EFI partition automatically
 echo ""
@@ -271,7 +272,7 @@ fi
 
 
 # Cleanup
-sudo qemu-nbd --disconnect $NBD_DEVICE
+qemu-nbd --disconnect $NBD_DEVICE
 nbd_mounted=0
 rm -rf mnt
 cd $here
