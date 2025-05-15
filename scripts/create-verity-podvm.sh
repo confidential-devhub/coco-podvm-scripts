@@ -176,5 +176,8 @@ export ROOT_PARTITION_UUID
 $VERITY_SCRIPT_LOCATION $INPUT_IMAGE
 echo ""
 
-cd -
+cd - > /dev/null
 rm -rf $WORK_FOLDER
+
+echo "Process completed!"
+echo "Your input qcow2 is now a coco-podvm with dm-verity enabled."
