@@ -1,4 +1,4 @@
-# How to create a dm-verity image
+# How to create a dm-verity image via container
 
 1. Download official RHEL ISO and build a CVM with `ks/rhel9-dm-root.ks`:
 ```
@@ -22,7 +22,19 @@ Options (define them as variable):
 SB_CERT_NAME:               optional  - name of the secureboot certificate added into the gallery. Default: My custom certificate
 ```
 
-4. Define the following vars (available also with `create-verity-podvm.sh help`)
+4. Build the container (if `dnf install` fails, make sure podman has logged into your RHEL account)
+```
+sudo podman build my-coco-podvm .
+```
+
+5. Export the following mandatory variables
+```
+QCOW2=path/where/qcow2/is
+IMAGE_CERTIFICATE_PEM=path/where/pem_cert/is
+IMAGE_PRIVATE_KEY=path/where/private_key/is
+```
+
+6. Optionally, define additional variables used by `scripts/create-verity-podvm.sh` running inside the container: (usage message available also with `create-verity-podvm.sh help`)
 ```
 Usage: ./create-verity-podvm.sh <INPUT_IMAGE>
 Usage: ./create-verity-podvm.sh help
@@ -56,16 +68,24 @@ ROOT_PASSWORD:              optional   - set root's password. Default: disabled
 
 ```
 
-5. Run `create-verity-podvm.sh` that internally calls `coco/coco-components.sh` and `verity/verity.sh`
-
+7. Run the container. To add the optional exported variables, just add `-e YOUR_VAR=$YOUR_VAR`.
 ```
-RHEL_QCOW2=rhel_9.6-x86_64-cvm.qcow2
-
-create-verity-podvm.sh $RHEL_QCOW2
+sudo podman run --rm \
+    --privileged \
+    -v $QCOW2:/disk.qcow2 \
+    -v $IMAGE_CERTIFICATE_PEM:/public.pem \
+    -v $IMAGE_PRIVATE_KEY:/private.key \
+    -v /lib/modules:/lib/modules \
+    --user 0 \
+    --security-opt=apparmor=unconfined \
+    --security-opt=seccomp=unconfined \
+    --mount type=bind,source=/dev,target=/dev \
+    --mount type=bind,source=/run/udev,target=/run/udev \
+    coco-podvm
 ```
-As a result. the input image will contain coco-components and be dm-verity protected.
+As a result, the input image will contain coco-components and be dm-verity protected.
 
-6. Optionally, upload yourself the image on Azure image gallery using `azure/upload-azure.sh`. In order to use that script, define the following variables (available also by running `azure/upload-azure.sh help`):
+8. Optionally, upload yourself the image on Azure image gallery using `azure/upload-azure.sh`. In order to use that script, define the following variables (usage message available also by running `azure/upload-azure.sh help`):
 ```
 Usage: azure/upload-azure.sh <INPUT_IMAGE> <DER_CERTIFICATE>
 Usage: azure/upload-azure.sh help
