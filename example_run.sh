@@ -13,6 +13,7 @@ sudo podman build -t coco-podvm \
     ${subscription} \
     -f Dockerfile .
 
+[[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
 
 sudo podman run --rm \
     --privileged \
@@ -25,5 +26,6 @@ sudo podman run --rm \
     --security-opt=seccomp=unconfined \
     --mount type=bind,source=/dev,target=/dev \
     --mount type=bind,source=/run/udev,target=/run/udev \
-    coco-podvm
+    $run_extras \
+    localhost/coco-podvm
 
