@@ -1,6 +1,6 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn && dnf clean all && dnf config-manager --set-disabled "*centos*"
+dnf config-manager --add-repo=https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
@@ -13,6 +13,10 @@ ln -s ../afterburn-checkin.service /etc/systemd/system/multi-user.target.wants/a
 
 tar -xzvf /tmp/podvm-binaries.tar.gz -C /
 tar -xzvf /tmp/pause-bundle.tar.gz -C /
+# set luks
+#dnf install -y e2fsprogs
+# TODO: move to payload ?
+tar -xzvf /tmp/luks-config.tar.gz -C /
 
 # fixes a failure of the podns@netns service
 semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip

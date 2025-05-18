@@ -80,6 +80,7 @@ EXTRA_ARGS=""
 virt-customize \
     --copy-in $ARTIFACTS_FOLDER/podvm-binaries.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/pause-bundle.tar.gz:/tmp/ \
+    --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
     --run $ARTIFACTS_FOLDER/podvm_maker.sh \
     --uninstall cloud-init \
     --uninstall WALinuxAgent \
