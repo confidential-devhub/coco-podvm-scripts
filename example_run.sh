@@ -1,10 +1,18 @@
 #! /bin/bash
 
-QCOW2=~/.local/share/libvirt/images/rhel9.5-created-ks.qcow2
-IMAGE_CERTIFICATE_PEM=/home/eesposit/openshift/coco-podvm-scripts/scripts/certs/public_key.pem
-IMAGE_PRIVATE_KEY=/home/eesposit/openshift/coco-podvm-scripts/scripts/certs/private.key
+QCOW2=${1:-${QCOW2:-~/.local/share/libvirt/images/rhel9.5-created-ks.qcow2}}
+IMAGE_CERTIFICATE_PEM=${2:-${IMAGE_CERTIFICATE_PEM:-$(pwd)/public_key.pem}}
+IMAGE_PRIVATE_KEY=${3:-${IMAGE_PRIVATE_KEY:-$(pwd)/private.key}}
 
-sudo podman build coco-podvm .
+[[ -f $QCOW2 && -f $IMAGE_CERTIFICATE_PEM && -f $IMAGE_PRIVATE_KEY ]] || \
+    { printf "One or more required files are missing:\n\tQCOW2=$QCOW2\n\tIMAGE_CERTIFICATE_PEM=$IMAGE_CERTIFICATE_PEM\n\tIMAGE_PRIVATE_KEY=$IMAGE_PRIVATE_KEY\n "; exit 1; }
+
+[[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && subscription=" --build-arg ORG_ID=${ORG_ID} --build-arg ACTIVATION_KEY=${ACTIVATION_KEY} "
+
+sudo podman build -t coco-podvm \
+    ${subscription} \
+    -f Dockerfile .
+
 
 sudo podman run --rm \
     --privileged \
