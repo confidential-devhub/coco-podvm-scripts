@@ -1,2 +1,3 @@
 certs/
 builddir/
+podvm-container/*.qcow2
