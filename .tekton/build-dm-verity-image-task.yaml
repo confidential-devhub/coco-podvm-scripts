@@ -221,7 +221,7 @@ spec:
         EFI_PN=nbd0p1
         ROOT_PN=nbd0p2
 
-        LUKS_MINIMAL_SPACE_MB=100
+        LUKS_MINIMAL_SPACE_MB=2500
         VERITY_MAX_SPACE_MB=512
         DISK_FORMAT=qcow2
 
