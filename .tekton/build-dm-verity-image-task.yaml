@@ -276,28 +276,8 @@ spec:
 
         # apply_dmverity
         # create config files and folders for systemd-repart and UKI
-        WORKDIR=conf
-        mkdir $WORKDIR
-        # Verity partition has to be 10% of the original partition (256MB).
-        # Exaggerate and give 512MB
-        echo "[Partition]
-        Type=root-verity
-        Verity=hash
-        VerityMatchKey=root
-        PaddingWeight=1
-        SizeMinBytes=64M
-        SizeMaxBytes=${VERITY_MAX_SPACE_MB}M" > $WORKDIR/verity.conf
-
-        # Used just to reference the root
-        # Fix the root size to 2.5GB because that's what it is provided. It shouldn't grow.
-        echo "[Partition]
-        Type=root
-        Verity=data
-        VerityMatchKey=root
-        SizeMaxBytes=2560M" > $WORKDIR/root.conf
-
-        systemd-repart $NBD_DEVICE --dry-run=no --definitions=$WORKDIR --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > $WORKDIR/roothash.txt
-        RH=$(cat $WORKDIR/roothash.txt)
+        systemd-repart $NBD_DEVICE --dry-run=no --definitions=/workspace/source/konflux/verity-definitions/ --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > roothash.txt
+        RH=$(cat roothash.txt)
 
         if [ "$RH" == "TBD" ]; then
             echo "roothash is TBD, something went wrong. Make sure the image you are using doesn't have a /verity partition already!"
