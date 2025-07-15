@@ -229,7 +229,7 @@ spec:
         VERITY_MAX_SPACE_MB=512
         DISK_FORMAT=qcow2
 
-        root_tar_dir=/workspace/scripts/coco/podvm/luks-scratch
+        root_tar_dir=/workspace/source/konflux/podvm-root
         root_tar_file=${root_tar_dir}/podvm-root.tar.gz
         pushd ${root_tar_dir}
         tar -czvf ${root_tar_file} *
