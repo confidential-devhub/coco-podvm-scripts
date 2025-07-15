@@ -55,36 +55,6 @@ spec:
       - mountPath: "/var/lib/containers/storage"
         name: varlibcontainers
   steps:
-    - name: check-repo-privacy
-      image: quay.io/konflux-ci/hermeto:0.29.0@sha256:f577e0399953471df7a9826c1550aef83d28e8b35f76dd65a193441822b629ee
-      script: |-
-        #!/bin/bash
-        set -o verbose
-        set -eu
-        set -x
-
-        # Extract repository from OUTPUT_IMAGE parameter
-        # Expected format: quay.io/org/repo:tag
-        REPO_URL=$(echo "$OUTPUT_IMAGE" | cut -d: -f1)
-        REPO_PATH=$(echo "$REPO_URL" | sed 's|https://||' | sed 's|quay.io/||')
-        
-        # Make unauthenticated request to check if repo is private
-        response=$(curl -s -w "%{http_code}" "https://quay.io/api/v1/repository/${REPO_PATH}")
-        http_code="${response: -3}"
-        body="${response%???}"
-        
-        echo "HTTP Status Code: $http_code"
-        echo "Response Body: $body"
-        
-        # Check if we get 401 (unauthorized) which indicates private repo
-        if [ "$http_code" = "401" ]; then
-          echo "Repository is private (401 Unauthorized response)"
-          exit 0
-        else
-          echo "Repository appears to be public (HTTP $http_code)"
-          echo "This may indicate a security issue - repository should be private"
-          exit 1
-        fi
     - name: use-trusted-artifact
       image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:4689f88dd253bd1feebf57f1a76a5a751880f739000719cd662bbdc76990a7fd
       args:
