@@ -366,9 +366,7 @@ spec:
 
 
         # make scripts executable and sync them to the cloud VM.
-        chmod +x scripts/script-build.sh
-        chmod +x scripts/script-verity.sh
-        chmod +x scripts/script-push.sh
+        chmod +x scripts/*.sh
         rsync -ra scripts "$SSH_HOST:$BUILD_DIR"
         rsync -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
 
