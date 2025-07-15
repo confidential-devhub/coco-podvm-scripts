@@ -219,6 +219,30 @@ spec:
 
         REMOTESSHEOF
 
+        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -ex
+
+        tar -xzvf /tmp/podvm-binaries.tar.gz -C /
+        tar -xzvf /tmp/pause-bundle.tar.gz -C /
+        tar -xzvf /tmp/podvm-root.tar.gz -C /
+
+        dnf remove -y cloud-init WALinuxAgent
+
+        # fixes a failure of the podns@netns service
+        semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+
+        # this will allow /run/issue and /run/issue.d to take precedence
+        mv /etc/issue.d /usr/lib/issue.d || true
+        rm -f /etc/issue.net
+        rm -f /etc/issue
+
+        systemctl enable afterburn-checkin.service
+        systemctl enable luks-scratch.service
+        systemctl enable gen-issue.service
+
+        REMOTESSHEOF
+
         cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
         #!/bin/bash
         set -ex
@@ -234,6 +258,21 @@ spec:
         LUKS_MINIMAL_SPACE_MB=2500
         VERITY_MAX_SPACE_MB=512
         DISK_FORMAT=qcow2
+
+        root_tar_dir=/workspace/scripts/coco/podvm/luks-scratch
+        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
+        pushd ${root_tar_dir}
+        tar -czvf ${root_tar_file} *
+        popd
+
+        virt-customize \
+          --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
+          --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
+          --copy-in ${root_tar_file}:/tmp/ \
+          --run /workspace/scripts/script-podvm-maker.sh \
+          --uninstall cloud-init \
+          --uninstall WALinuxAgent \
+          -a $DISK
 
         # Resize the disk
         MB=$((1024 * 1024))
