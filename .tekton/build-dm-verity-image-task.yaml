@@ -193,7 +193,6 @@ spec:
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
-          -v $BUILD_DIR/scripts/script-verity.sh:/script-verity.sh \
           -v /lib/modules:/lib/modules:ro,Z \
           --user 0 \
           --security-opt=apparmor=unconfined \
@@ -207,7 +206,7 @@ spec:
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel9.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=3 --initrd-inject=/workspace/source/helpers/rhel9-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel9-dm-root.ks' --transient
 
-        time sudo podman exec -t --latest /script-verity.sh
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
 
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
