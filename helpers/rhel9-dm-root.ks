@@ -79,6 +79,9 @@ uki-direct
 # versionlock plugin
 python3-dnf-plugin-versionlock
 
+afterburn
+e2fsprogs
+
 %end
 
 %post --erroronfail
