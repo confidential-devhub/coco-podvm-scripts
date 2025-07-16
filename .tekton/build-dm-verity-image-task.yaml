@@ -244,8 +244,6 @@ spec:
           --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
           --copy-in ${root_tar_file}:/tmp/ \
           --run /workspace/scripts/script-podvm-maker.sh \
-          --uninstall cloud-init \
-          --uninstall WALinuxAgent \
           -a $DISK
 
         # Resize the disk
