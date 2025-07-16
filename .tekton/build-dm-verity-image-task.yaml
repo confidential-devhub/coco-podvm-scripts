@@ -139,7 +139,7 @@ spec:
         # this unquoted heredoc allows expansions for the image name
         cat >scripts/script-build.sh <<REMOTESSHEOF
         #!/bin/sh
-        set -e
+        set -ex
 
         export BUILD_DIR="$BUILD_DIR"
         export OUTPUT_IMAGE="$OUTPUT_IMAGE"
