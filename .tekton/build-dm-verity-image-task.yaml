@@ -16,9 +16,9 @@ spec:
       description: The output manifest list that points to the OCI artifact of the zipped image
     - name: SOURCE_ARTIFACT
       type: string
-    - default: etc-pki-entitlement
-      description: Name of secret which contains the entitlement certificates
-      name: ENTITLEMENT_SECRET
+    - default: activation-key
+      description: Name of secret which contains subscription activation key
+      name: ACTIVATION_KEY
       type: string
     - name: RHEL_IMAGE_CHECKSUM
       type: string
@@ -43,8 +43,8 @@ spec:
     env:
       - name: OUTPUT_IMAGE
         value: $(params.OUTPUT_IMAGE)
-      - name: ENTITLEMENT_SECRET
-        value: $(params.ENTITLEMENT_SECRET)
+      - name: ACTIVATION_KEY
+        value: $(params.ACTIVATION_KEY)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: PODVM_PAYLOAD_IMAGE
@@ -128,10 +128,10 @@ spec:
         export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60"
         mkdir -p scripts
         echo "$BUILD_DIR"
-        ssh -v $SSH_ARGS "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/entitlement"
+        ssh -v $SSH_ARGS "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/activation-key"
 
         rsync -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
-        rsync -ra /entitlement/ "$SSH_HOST:$BUILD_DIR/entitlement/"
+        rsync -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
 
         rsync -ra "/var/workdir/rhel.iso" "$SSH_HOST:$BUILD_DIR/"
         rsync -ra "/var/workdir/source" "$SSH_HOST:$BUILD_DIR/"
@@ -157,12 +157,24 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
+  
+        # Pre-register with subscription manager
+        set +x
+        subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
+        set -x
 
-        # this prevents the container from using podman-subscripition-mananger magic,
-        # so that it will use certificates from /etc/pki/entitlements
-        sudo rm /usr/share/containers/mounts.conf
-
-        time sudo podman build --authfile=$BUILD_DIR/.docker/config.json -v $BUILD_DIR/entitlement:/etc/pki/entitlement:Z -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
+        # Create directories for certificates
+        mkdir -p /tmp/rhsm/etc/pki/entitlement
+        mkdir -p /tmp/rhsm/etc/pki/consumer
+        
+        # Copy generated certificates
+        cp /etc/pki/entitlement/*.pem /tmp/rhsm/etc/pki/entitlement
+        cp /etc/pki/consumer/*.pem /tmp/rhsm/etc/pki/consumer
+        
+        time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
+          -v /shared/rhsm/etc/pki/entitlement:/etc/pki/entitlement:Z \
+          -v /shared/rhsm/etc/pki/consumer:/etc/pki/consumer:Z) \
+          -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
 
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
@@ -367,8 +379,8 @@ spec:
         - mountPath: /ssh
           name: ssh
           readOnly: true
-        - mountPath: /entitlement
-          name: etc-pki-entitlement
+        - mountPath: /activation-key
+          name: activation-key
   volumes:
     - emptyDir: {}
       name: workdir
@@ -378,7 +390,7 @@ spec:
       secret:
         optional: false
         secretName: multi-platform-ssh-$(context.taskRun.name)
-    - name: etc-pki-entitlement
+    - name: activation-key
       secret:
         optional: true
-        secretName: $(params.ENTITLEMENT_SECRET)
+        secretName: $(params.ACTIVATION_KEY)
