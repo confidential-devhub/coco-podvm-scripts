@@ -158,6 +158,10 @@ spec:
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
 
+        # this prevents the container from using podman-subscripition-mananger magic,
+        # so that it will use certificates from /etc/pki/entitlements
+        sudo rm /usr/share/containers/mounts.conf
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json -v $BUILD_DIR/entitlement:/etc/pki/entitlement:Z -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
 
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
