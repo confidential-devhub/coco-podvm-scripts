@@ -160,7 +160,7 @@ spec:
   
         # Pre-register with subscription manager
         set +x
-        subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
+        subscription-manager register --org "$(cat $BUILD_DIR/activation-key/org)" --activationkey "$(cat $BUILD_DIR/activation-key/activationkey)"
         set -x
 
         # Create directories for certificates
