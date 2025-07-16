@@ -158,22 +158,8 @@ spec:
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
   
-        # Pre-register with subscription manager
-        set +x
-        subscription-manager register --org "$(cat $BUILD_DIR/activation-key/org)" --activationkey "$(cat $BUILD_DIR/activation-key/activationkey)"
-        set -x
-
-        # Create directories for certificates
-        mkdir -p /tmp/rhsm/etc/pki/entitlement
-        mkdir -p /tmp/rhsm/etc/pki/consumer
-        
-        # Copy generated certificates
-        cp /etc/pki/entitlement/*.pem /tmp/rhsm/etc/pki/entitlement
-        cp /etc/pki/consumer/*.pem /tmp/rhsm/etc/pki/consumer
-        
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
-          -v /shared/rhsm/etc/pki/entitlement:/etc/pki/entitlement:Z \
-          -v /shared/rhsm/etc/pki/consumer:/etc/pki/consumer:Z) \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
 
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
