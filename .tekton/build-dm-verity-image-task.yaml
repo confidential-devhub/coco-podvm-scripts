@@ -307,7 +307,7 @@ spec:
             ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
             echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
         fi
-        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
+        /usr/lib/systemd/ukify build --cmdline="roothash=$RH" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
         echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
         /usr/lib/systemd/ukify inspect $ADDON_NAME
         cd
