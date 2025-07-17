@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ! tpm2_pcrread sha256:0 > /dev/null 2>&1; then
+   echo "No vTPM detected"
+   exit 0
+fi
+
+mkdir -p /run/issue.d
+
+rm -f /etc/issue.net
+rm -f /etc/issue
+{
+  echo "Detected vTPM PCR values:"
+  /usr/bin/tpm2_pcrread sha256:all
+  echo
+} > /run/issue.d/30-pcrs.issue

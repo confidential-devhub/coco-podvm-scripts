@@ -1,0 +1,9 @@
+[Unit]
+ConditionKernelCommandLine=
+
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/afterburn --provider=azure --check-in
+
+[Install]
+WantedBy=multi-user.target
