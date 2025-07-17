@@ -1,0 +1,4 @@
+trusted_tasks:
+  git+https://github.com/confidential-devhub/coco-podvm-scripts//.tekton/build-dm-verity-image-task.yaml:
+    - effective_on: "2025-07-01T00:00:00Z"
+      ref: 5018ae003351c37700b755296baa1ced4dc5f7cc
