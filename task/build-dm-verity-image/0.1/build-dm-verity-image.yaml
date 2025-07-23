@@ -156,7 +156,16 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
-  
+
+        echo "#########################################################################"
+
+        lsmod | grep kvm
+        time sudo modprobe kvm kvm_intel || time sudo modprobe kvm kvm_amd || echo "F******"
+        lsmod | grep kvm
+
+        echo "#########################################################################"
+
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
@@ -170,6 +179,7 @@ spec:
           --security-opt=seccomp=unconfined \
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
+          --cap-add=CAP_SYS_ADMIN \
           --env=LIBGUESTFS_BACKEND=direct \
           builder
 
