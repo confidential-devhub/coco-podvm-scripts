@@ -170,12 +170,18 @@ spec:
           --security-opt=seccomp=unconfined \
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
+          --device /dev/kvm \
+          --cap-add=CAP_SYS_ADMIN \
           --env=LIBGUESTFS_BACKEND=direct \
           builder
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel9.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=3 --initrd-inject=/workspace/source/helpers/rhel9-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel9-dm-root.ks' --transient
+
+        time sudo podman exec -t --latest lsmod
+        time sudo podman exec -t --latest modprobe kvm kvm_intel
+        time sudo podman exec -t --latest lsmod
 
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
 
