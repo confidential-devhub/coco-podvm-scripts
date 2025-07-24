@@ -156,7 +156,16 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
-  
+
+        echo "#########################################################################"
+
+        lsmod | grep kvm
+        time sudo modprobe kvm kvm_intel || time sudo modprobe kvm kvm_amd || echo "F******"
+        lsmod | grep kvm
+
+        echo "#########################################################################"
+
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
@@ -170,6 +179,7 @@ spec:
           --security-opt=seccomp=unconfined \
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
+          --cap-add=CAP_SYS_ADMIN \
           --env=LIBGUESTFS_BACKEND=direct \
           builder
 
@@ -178,6 +188,8 @@ spec:
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel9.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=3 --initrd-inject=/workspace/source/helpers/rhel9-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel9-dm-root.ks' --transient
 
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
+
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh
 
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
@@ -335,6 +347,7 @@ spec:
         image_name="dm-verity-image"
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container /output/qcow2/disk.qcow2 image/podvm.qcow2
+        buildah add $buildah_container /output/qcow2/measurements.json image/measurements.json
         buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
@@ -352,6 +365,95 @@ spec:
         echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
         REMOTESSHEOF
 
+        cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -euo pipefail
+
+        launch_guest() {
+          echo "Launching QEMU guest..."
+          cp /usr/share/edk2/ovmf/OVMF_CODE.fd .
+
+          /usr/libexec/qemu-kvm \
+            -machine type=q35,accel=kvm,smm=off \
+            -m 1024 \
+            -cpu host \
+            -drive file=./OVMF_CODE.fd,format=raw,if=pflash \
+            -drive file=/output/qcow2/disk.qcow2,format=qcow2 \
+            -chardev socket,id=chrtpm,path=./vtpm/swtpm.sock \
+            -tpmdev emulator,id=tpm0,chardev=chrtpm \
+            -device tpm-tis,tpmdev=tpm0 \
+            -nographic \
+            -serial file:serial.log \
+            -monitor telnet::45454,server,nowait
+        }
+
+        # Subcommand: stop
+        stop_guest() {
+          echo "Stopping QEMU guest..."
+          echo q | nc localhost 45454
+        }
+
+        # Subcommand: swtpm
+        setup_swtpm() {
+          echo "Setting up software TPM..."
+          mkdir -p vtpm
+          swtpm socket \
+            --tpmstate dir=./vtpm \
+            --ctrl type=unixio,path=./vtpm/swtpm.sock \
+            --tpm2
+        }
+
+        # Subcommand: wait
+        wait_for_guest() {
+          echo "Waiting for guest to boot..."
+          timeout=60
+          elapsed=0
+          touch serial.log
+          while ! grep -q "login:" serial.log; do
+            sleep 2
+            elapsed="$((elapsed + 2))"
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "Guest failed to boot within ${timeout}s." >&2
+              exit 1
+            fi
+          done
+          echo "Guest booted correctly!"
+        }
+
+        # Subcommand: scrape
+        scrape_logs() {
+          # Extract the PCR block from the log.
+
+          # This assumes the block starts with "Detected vTPM PCR values:"
+          # and ends when a non-indented line appears.
+          pcr_block=$(sed -n '/Detected vTPM PCR values:/,/^[^[:space:]]/p' serial.log)
+
+          # detect line "sha***:"
+          alg=$(echo "$pcr_block" | grep -E "^[[:space:]]*sha.*:" | awk -F':' '{print $1}' | tr -d '[:space:]')
+          echo -n "{\"measurements\":{\"${alg}\":{"
+          # Now filter for PCRs 3, 9, 11 and 12.
+          echo "$pcr_block" | grep -E "^[[:space:]]*(3|9|11|12)[[:space:]]*:" | while read -r line; do
+            # Use awk to split the line at the colon.
+            index=$(echo "$line" | awk -F':' '{print $1}' | tr -d '[:space:]')
+            value=$(echo "$line" | awk -F':' '{print tolower($2)}' | tr -d '[:space:]')
+            echo -n "${need_sep:+,}\"pcr$(printf "%02d" "$index")\":\"$value\""
+            need_sep=1
+          done
+          echo "}}}"
+        }
+
+        # Main command dispatch
+        main() {
+            setup_swtpm &
+            launch_guest &
+            wait_for_guest
+            scrape_logs > /output/qcow2/measurements.json
+            stop_guest
+            jq -e . /output/qcow2/measurements.json
+        }
+
+        main "$@"
+        REMOTESSHEOF
 
         # make scripts executable and sync them to the cloud VM.
         chmod +x scripts/*.sh
