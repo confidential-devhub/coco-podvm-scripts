@@ -374,7 +374,7 @@ spec:
             -device tpm-tis,tpmdev=tpm0 \
             -nographic \
             -serial file:serial.log \
-            -monitor telnet::45454,server,nowait
+            -monitor telnet::45454,server,nowait; rc=$?; [ $rc -eq 1 ] || exit $rc
         }
 
         # Subcommand: stop
