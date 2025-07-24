@@ -455,7 +455,7 @@ spec:
             wait_for_guest
             wait_for_pcrs
             scrape_logs > /output/qcow2/measurements.json
-            stop_guest
+            #stop_guest
             jq -e . /output/qcow2/measurements.json
         }
 
