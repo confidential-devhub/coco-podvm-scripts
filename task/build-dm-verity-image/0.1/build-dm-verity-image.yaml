@@ -410,6 +410,22 @@ spec:
           echo "Guest booted correctly!"
         }
 
+        # on tcg VM it takes time to PCRs to be printed
+        wait_for_pcrs() {
+          echo "Waiting for pcrs to appear..."
+          timeout=600
+          elapsed=0
+          while ! grep -q "Detected vTPM PCR values" serial.log; do
+            sleep 2
+            elapsed="$((elapsed + 2))"
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "Guest failed to wait for PCRs within ${timeout}s." >&2
+              exit 1
+            fi
+          done
+          echo "PCR has been printed"
+        }
+
         # Subcommand: scrape
         scrape_logs() {
           # Extract the PCR block from the log.
@@ -437,6 +453,7 @@ spec:
             setup_swtpm &
             launch_guest &
             wait_for_guest
+            wait_for_pcrs
             scrape_logs > /output/qcow2/measurements.json
             stop_guest
             jq -e . /output/qcow2/measurements.json
