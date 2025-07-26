@@ -358,6 +358,7 @@ spec:
         cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
         #!/bin/bash
         set -euo pipefail
+        set -x
 
         launch_guest() {
           echo "Launching QEMU guest..."
