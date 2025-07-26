@@ -1,6 +1,7 @@
 [Unit]
 Description=Generate issue to print to serial console at startup
 After=process-user-data.service
+Before=getty@ttyS0.service
 
 [Service]
 Type=oneshot
