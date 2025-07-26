@@ -381,6 +381,7 @@ spec:
         stop_guest() {
           echo "Stopping QEMU guest..."
           echo q | nc localhost 45454
+          sleep 30
         }
 
         # Subcommand: swtpm
@@ -455,7 +456,9 @@ spec:
             wait_for_guest
             wait_for_pcrs
             scrape_logs > /output/qcow2/measurements.json
-            #stop_guest
+            ls -l /output/qcow2/measurements.json
+            cat /output/qcow2/measurements.json
+            stop_guest
             jq -e . /output/qcow2/measurements.json
         }
 
