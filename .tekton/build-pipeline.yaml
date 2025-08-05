@@ -186,7 +186,7 @@ spec:
         - name: OUTPUT_IMAGE
           value: $(params.output-image)
         - name: PODVM_PAYLOAD_IMAGE
-          value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:73a82ac1c252f068f9d046a36dfca7932202ad728f94fc575a332d8707650905
+          value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload:on-pr-56758d6e31e94d8b0fa12dc817d1534b6b9e9472
       runAfter:
         - prefetch-dependencies
       taskRef:
@@ -195,7 +195,7 @@ spec:
           - name: name
             value: build-dm-verity-image
           - name: bundle
-            value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-task:0.1@sha256:8c8b0c19d3552c1c546c025ae739104168e2accf569c4c2e028a95e731433631
+            value: quay.io/redhat-user-workloads/ose-osc-tenant/build-dm-verity-image-task:on-pr-83e0f79949086aab71ba57f7212609324eb2327f
           - name: kind
             value: task
       when:
