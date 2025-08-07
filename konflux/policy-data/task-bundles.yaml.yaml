@@ -1,4 +1,4 @@
 trusted_tasks:
   oci://quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-task:0.1:
-  - ref: sha256:213718b6ebb6796562a8e63dd246e1e8a4d3177eecfd55f8cbc58ee656ef756c
+  - ref: sha256:7618e7148148e8d693ef5e56de84e4052337367f3b0e61ce1bb00cc49a13e5a8
     effective_on: 2025-07-20T00:00:00Z
