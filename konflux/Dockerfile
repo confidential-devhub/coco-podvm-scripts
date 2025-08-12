@@ -1,4 +1,4 @@
-FROM registry.redhat.io/ubi9/ubi-init@sha256:4b29d34b9e310f1b8fa93bb2c727a1efa43328f5d647d50ebefb82cc1c4197ff
+FROM registry.redhat.io/ubi9/ubi-init@sha256:28fa5bdcafa3392aaf1a60b9dcc8174e1e3949bfd163eea9eedec44568db89af
 
 RUN subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
 
