@@ -65,7 +65,7 @@ ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/
 coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
 
 LUKS_MINIMAL_SPACE_MB=2500
-VERITY_MAX_SPACE_MB=512
+# VERITY_MAX_SPACE_MB=512
 
 nbd_mounted=0
 esp_mounted=0
@@ -120,9 +120,11 @@ function resize_disk()
     DISK_RESIZE=$1
     MB=$((1024 * 1024))
     current_size=$(qemu-img info -f $DISK_FORMAT --output json $DISK_RESIZE | jq '."virtual-size"')
-    # new_size=$((current_size * 110 / 100)) # increase 10% for verity - obsolete
+    export current_size
     luks_min_space=$((LUKS_MINIMAL_SPACE_MB * MB))
-    verity_max_space=$((VERITY_MAX_SPACE_MB * MB))
+    # verity_max_space=$((VERITY_MAX_SPACE_MB * MB))
+    verity_max_space=$((current_size * 7 / 100)) # get 7% for verity
+    export verity_max_space
     new_size=$((current_size + luks_min_space + verity_max_space))
     rounded_size=$(((new_size + MB - 1) / MB * MB))
     echo "Current disk size: $current_size"
@@ -179,25 +181,24 @@ function apply_dmverity()
     # create config files and folders for systemd-repart and UKI
     WORKDIR=conf
     mkdir $WORKDIR
-    # Verity partition has to be 10% of the original partition (256MB).
-    # Exaggerate and give 512MB
+
+    # Verity partition has to be 7% of the original partition.
     echo "[Partition]
     Type=root-verity
     Verity=hash
     VerityMatchKey=root
     PaddingWeight=1
     SizeMinBytes=64M
-    SizeMaxBytes=${VERITY_MAX_SPACE_MB}M" > $WORKDIR/verity.conf
+    SizeMaxBytes=${verity_max_space}" > $WORKDIR/verity.conf
 
     # Used just to reference the root
-    # Fix the root size to 2.5GB because that's what it is provided. It shouldn't grow.
     echo "[Partition]
     Type=root
     Verity=data
     VerityMatchKey=root
-    SizeMaxBytes=2560M" > $WORKDIR/root.conf
+    SizeMaxBytes=${current_size}" > $WORKDIR/root.conf
 
-    systemd-repart $NBD_DEVICE --dry-run=no --definitions=$WORKDIR --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > $WORKDIR/roothash.txt
+    SYSTEMD_LOG_LEVEL=debug systemd-repart $NBD_DEVICE --dry-run=no --definitions=$WORKDIR --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > $WORKDIR/roothash.txt
     RH=$(cat $WORKDIR/roothash.txt)
     rm -rf $WORKDIR
 
