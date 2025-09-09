@@ -21,12 +21,12 @@ sudo podman build -t coco-podvm \
 
 sudo podman run --rm \
     --privileged \
-    -v $QCOW2:/disk.qcow2 \
     $CERT_OPTIONS \
     -v /lib/modules:/lib/modules:ro,Z \
     --user 0 \
     --security-opt=apparmor=unconfined \
     --security-opt=seccomp=unconfined \
+    --mount type=bind,source=$QCOW2,target=/disk.qcow2 \
     --mount type=bind,source=/dev,target=/dev \
     --mount type=bind,source=/run/udev,target=/run/udev \
     $run_extras \
