@@ -22,6 +22,16 @@ semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
 
 systemctl enable /etc/systemd/system/luks-scratch.service
 
+# link daemon.json to apf.json so that it works on both old and new agent-forwarder config location
+# Ensure canonical config is on the sealed root
+install -D -m 0644 /tmp/apf.json /etc/peerpod/apf.json
+
+# Create a tmpfiles rule so /run/peerpod/daemon.json points to it on every boot
+cat >/etc/tmpfiles.d/agent-protocol-forwarder.conf <<'EOF'
+d /run/peerpod 0755 root root -
+L /run/peerpod/daemon.json - - - - /var/run/peerpod/apf.json
+EOF
+
 # Configuration to make PCR values to be printed at boot
 cat <<EOF > /usr/libexec/gen-issue
 #!/usr/bin/env bash
