@@ -1,6 +1,6 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
@@ -17,7 +17,7 @@ tar -xzvf /tmp/pause-bundle.tar.gz -C /
 # TODO: move to payload ?
 tar -xzvf /tmp/luks-config.tar.gz -C /
 
-# fixes a failure of the podns@netns service
+# fixes a failure of the podns@netns service #TODO: still needed?
 semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
 
 systemctl enable /etc/systemd/system/luks-scratch.service
@@ -75,3 +75,11 @@ ExecStartPre=-/bin/mount -t iso9660 -o ro /dev/disk/by-label/cidata /media/cidat
 # The digest is a string in hex representation, we truncate it to a 32 bytes hex string
 ExecStartPost=-/bin/bash -c 'tpm2_pcrextend 8:sha256=\$(head -c64 /run/peerpod/initdata.digest)'
 EOF
+
+# RHEL 10 networking requirements
+firewall-offline-cmd --zone=public --add-port=15150/tcp
+# The following is essential for functioning networking in RHEL 10, currently it's
+# installed when the helpers/rhel10-dm-root.ks is applied, once moving to use the
+# released CVM we need to make sure it's installed.
+# Also, once kernel-modules-extra-matched is available use it instead.
+# dnf install -y kernel-modules-extra-$(rpm -q --qf "%{VERSION}-%{RELEASE}" kernel-uki-virt)
