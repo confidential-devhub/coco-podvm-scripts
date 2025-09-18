@@ -23,7 +23,7 @@ spec:
     - name: RHEL_IMAGE_CHECKSUM
       type: string
       description: The checksum to use for downloading the RHEL image
-      default: febcc1359fd68faceff82d7eed8d21016e022a17e9c74e0e3f9dc3a78816b2bb
+      default: edce2dd6f8e1d1b2ff0b204f89b0659bc9e320d175beb7caad60712957a19608
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
@@ -178,7 +178,7 @@ spec:
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
-        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel9.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=3 --initrd-inject=/workspace/source/helpers/rhel9-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel9-dm-root.ks' --transient
+        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
 
@@ -217,6 +217,8 @@ spec:
         systemctl enable luks-scratch.service
         systemctl enable gen-issue.service
 
+        # networking fix
+        firewall-offline-cmd --zone=public --add-port=15150/tcp
         REMOTESSHEOF
 
         cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
