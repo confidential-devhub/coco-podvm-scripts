@@ -26,6 +26,15 @@ spec:
     value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-dm-verity-image:{{revision}}
   - name: dockerfile
     value: Dockerfile
+  taskRunSpecs:
+    - pipelineTaskName: build-vm-image
+      stepSpecs:
+        - name: download-rhel-image
+          computeResources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
   pipelineRef:
     name: build-pipeline
   taskRunTemplate:
