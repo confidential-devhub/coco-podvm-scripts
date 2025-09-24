@@ -186,7 +186,7 @@ spec:
         - name: OUTPUT_IMAGE
           value: $(params.output-image)
         - name: PODVM_PAYLOAD_IMAGE
-          value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload-v1-10@sha256:c9790aaa961f6976c14fc9cbef448fc48fcdfacf94f3af25fa2b1e31c72c8d9f
+          value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload-v1-10@sha256:8d6b1262c6cedd04e33441264539842d82ed057f64eda5c4bce59566bcb72558
       runAfter:
         - prefetch-dependencies
       taskRef:
