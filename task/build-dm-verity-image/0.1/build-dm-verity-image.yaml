@@ -28,9 +28,6 @@ spec:
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
       type: string
-    - name: PODVM_PAYLOAD_IMAGE
-      description: URL to the PodVM payload image.
-      type: string
   results:
     - description: Digest of the manifest list just built
       name: IMAGE_DIGEST
@@ -47,8 +44,6 @@ spec:
         value: $(params.ACTIVATION_KEY)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
-      - name: PODVM_PAYLOAD_IMAGE
-        value: $(params.PODVM_PAYLOAD_IMAGE)
       - name: SBOM_TYPE
         value: spdx
     volumeMounts:
@@ -146,16 +141,11 @@ spec:
         export BUILD_DIR="$BUILD_DIR"
         export OUTPUT_IMAGE="$OUTPUT_IMAGE"
         export BUILDAH_IMAGE="$BUILDAH_IMAGE"
-        PODVM_PAYLOAD_IMAGE="$PODVM_PAYLOAD_IMAGE"
 
         REMOTESSHEOF
 
         # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
         cat >>scripts/script-build.sh <<'REMOTESSHEOF'
-
-        podvm_payload_container=$(podman create $PODVM_PAYLOAD_IMAGE)
-        podman cp $podvm_payload_container:/podvm-binaries.tar.gz $BUILD_DIR
-        podman cp $podvm_payload_container:/pause-bundle.tar.gz $BUILD_DIR
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
@@ -242,8 +232,8 @@ spec:
         popd
 
         virt-customize \
-          --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
-          --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
+          --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
+          --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
           --copy-in ${root_tar_file}:/tmp/ \
           --run /workspace/scripts/script-podvm-maker.sh \
           -a $DISK
