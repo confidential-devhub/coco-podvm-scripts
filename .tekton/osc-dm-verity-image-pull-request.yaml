@@ -30,6 +30,15 @@ spec:
       value: 5d
     - name: dockerfile
       value: Dockerfile
+  taskRunSpecs:
+    - pipelineTaskName: build-vm-image
+      stepSpecs:
+        - name: download-rhel-image
+          computeResources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
   pipelineRef:
     name: build-pipeline
   taskRunTemplate:
