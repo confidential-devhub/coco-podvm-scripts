@@ -1,0 +1,527 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: image-build, konflux
+  labels:
+    app.kubernetes.io/version: "0.1"
+    build.appstudio.redhat.com/build_type: disk-image
+  name: build-dm-verity-image
+spec:
+  description: "Build disk images for sandboxed containers"
+  params:
+    - name: OUTPUT_IMAGE
+      type: string
+      description: The output manifest list that points to the OCI artifact of the zipped image
+    - name: SOURCE_ARTIFACT
+      type: string
+    - default: activation-key
+      description: Name of secret which contains subscription activation key
+      name: ACTIVATION_KEY
+      type: string
+    - name: RHEL_IMAGE_CHECKSUM
+      type: string
+      description: The checksum to use for downloading the RHEL image
+      default: febcc1359fd68faceff82d7eed8d21016e022a17e9c74e0e3f9dc3a78816b2bb
+    - default: redhat-api-secret
+      description: Name of secret which contains the offline token for the Red Hat API
+      name: REDHAT_OFFLINE_TOKEN_SECRET
+      type: string
+    - name: PODVM_PAYLOAD_IMAGE
+      description: URL to the PodVM payload image.
+      type: string
+  results:
+    - description: Digest of the manifest list just built
+      name: IMAGE_DIGEST
+    - description: Image repository where the built manifest list was pushed
+      name: IMAGE_URL
+    - description: Image reference (IMAGE_URL + IMAGE_DIGEST)
+      name: IMAGE_REFERENCE
+    - name: SBOM_BLOB_URL
+  stepTemplate:
+    env:
+      - name: OUTPUT_IMAGE
+        value: $(params.OUTPUT_IMAGE)
+      - name: ACTIVATION_KEY
+        value: $(params.ACTIVATION_KEY)
+      - name: BUILDAH_IMAGE
+        value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
+      - name: PODVM_PAYLOAD_IMAGE
+        value: $(params.PODVM_PAYLOAD_IMAGE)
+      - name: SBOM_TYPE
+        value: spdx
+    volumeMounts:
+      - mountPath: "/var/workdir"
+        name: workdir
+      - mountPath: "/var/lib/containers/storage"
+        name: varlibcontainers
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:4689f88dd253bd1feebf57f1a76a5a751880f739000719cd662bbdc76990a7fd
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+    - name: download-rhel-image
+      image: quay.io/konflux-ci/hermeto:0.29.0@sha256:f577e0399953471df7a9826c1550aef83d28e8b35f76dd65a193441822b629ee
+      env:
+        - name: REDHAT_OFFLINE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.REDHAT_OFFLINE_TOKEN_SECRET)
+              key: offline-token
+        - name: RHEL_IMAGE_CHECKSUM
+          value: $(params.RHEL_IMAGE_CHECKSUM)
+      script: |-
+        #!/bin/bash
+        set -euo pipefail
+
+        # Check that required variables are populated
+        if [ -z "${REDHAT_OFFLINE_TOKEN:-}" ]; then
+          echo "Error: REDHAT_OFFLINE_TOKEN is not set"
+          exit 1
+        fi
+        
+        if [ -z "${RHEL_IMAGE_CHECKSUM:-}" ]; then
+          echo "Error: RHEL_IMAGE_CHECKSUM is not set"
+          exit 1
+        fi
+        
+        echo "Using RHEL image checksum: ${RHEL_IMAGE_CHECKSUM}"
+
+        alias curl="curl --retry 5"
+        token_api_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+        download_api_url=https://api.access.redhat.com/management/v1/images/${RHEL_IMAGE_CHECKSUM}/download
+        token=$(curl "${token_api_url}" \
+            -d grant_type=refresh_token -d client_id=rhsm-api -d refresh_token="${REDHAT_OFFLINE_TOKEN}" | jq --raw-output .access_token)
+        download_url=$(curl -X 'GET' "${download_api_url}" \
+            -H "Authorization: Bearer ${token}" -H 'accept: application/json' | jq --raw-output .body.href)
+        filepath="/var/workdir/rhel.iso"
+        curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
+        echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
+    - name: build
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: 250m
+          memory: 128Mi
+      script: |-
+        #!/bin/bash
+        set -o verbose
+        set -eu
+        set -x
+
+        mkdir -p ~/.ssh
+        if [ -e "/ssh/error" ]; then
+          #no server could be provisioned
+          cat /ssh/error
+          exit 1
+        elif [ -e "/ssh/otp" ]; then
+          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
+        else
+          cp /ssh/id_rsa ~/.ssh
+        fi
+        chmod 0400 ~/.ssh/id_rsa
+        export SSH_HOST=$(cat /ssh/host)
+        export BUILD_DIR=$(cat /ssh/user-dir)
+        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60"
+        mkdir -p scripts
+        echo "$BUILD_DIR"
+        ssh -v $SSH_ARGS "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/activation-key"
+
+        rsync -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        rsync -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
+
+        rsync -ra "/var/workdir/rhel.iso" "$SSH_HOST:$BUILD_DIR/"
+        rsync -ra "/var/workdir/source" "$SSH_HOST:$BUILD_DIR/"
+
+        # this unquoted heredoc allows expansions for the image name
+        cat >scripts/script-build.sh <<REMOTESSHEOF
+        #!/bin/sh
+        set -ex
+
+        export BUILD_DIR="$BUILD_DIR"
+        export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+        export BUILDAH_IMAGE="$BUILDAH_IMAGE"
+        PODVM_PAYLOAD_IMAGE="$PODVM_PAYLOAD_IMAGE"
+
+        REMOTESSHEOF
+
+        # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
+        cat >>scripts/script-build.sh <<'REMOTESSHEOF'
+
+        podvm_payload_container=$(podman create $PODVM_PAYLOAD_IMAGE)
+        podman cp $podvm_payload_container:/podvm-binaries.tar.gz $BUILD_DIR
+        podman cp $podvm_payload_container:/pause-bundle.tar.gz $BUILD_DIR
+
+        mkdir -p output/qcow2/
+        echo "RUNNING BUILD"
+  
+        time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
+          -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
+
+        time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
+          -v ${BUILD_DIR}:/workspace \
+          -v $(pwd)/output:/output \
+          -v /lib/modules:/lib/modules:ro,Z \
+          --user 0 \
+          --security-opt=apparmor=unconfined \
+          --security-opt=seccomp=unconfined \
+          --mount type=bind,source=/dev,target=/dev \
+          --mount type=bind,source=/run/udev,target=/run/udev \
+          --env=LIBGUESTFS_BACKEND=direct \
+          builder
+
+        time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
+
+        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel9.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=3 --initrd-inject=/workspace/source/helpers/rhel9-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel9-dm-root.ks' --transient
+
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
+
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh
+
+        time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
+          -v $BUILD_DIR/.docker:/.docker \
+          -v $(pwd)/output:/output \
+          -v /var/lib/containers/storage:/var/lib/containers/storage \
+          -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
+          -v $BUILD_DIR/tekton-results:/tekton-results \
+          "$BUILDAH_IMAGE" \
+          /script-push.sh
+
+        REMOTESSHEOF
+
+        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -ex
+
+        tar -xzvf /tmp/podvm-binaries.tar.gz -C /
+        tar -xzvf /tmp/pause-bundle.tar.gz -C /
+        tar -xzvf /tmp/podvm-root.tar.gz -C /
+
+        dnf remove -y cloud-init WALinuxAgent
+
+        # fixes a failure of the podns@netns service
+        semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+
+        # this will allow /run/issue and /run/issue.d to take precedence
+        mv /etc/issue.d /usr/lib/issue.d || true
+        rm -f /etc/issue.net
+        rm -f /etc/issue
+
+        systemctl enable afterburn-checkin.service
+        systemctl enable luks-scratch.service
+        systemctl enable gen-issue.service
+
+        REMOTESSHEOF
+
+        cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -ex
+
+        ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
+        coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
+        
+        DISK=/output/qcow2/disk.qcow2
+        NBD_DEVICE=/dev/nbd0
+        EFI_PN=nbd0p1
+        ROOT_PN=nbd0p2
+
+        LUKS_MINIMAL_SPACE_MB=2500
+        VERITY_MAX_SPACE_MB=512
+        DISK_FORMAT=qcow2
+
+        root_tar_dir=/workspace/source/konflux/podvm-root
+        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
+        pushd ${root_tar_dir}
+        tar -czvf ${root_tar_file} *
+        popd
+
+        virt-customize \
+          --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
+          --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
+          --copy-in ${root_tar_file}:/tmp/ \
+          --run /workspace/scripts/script-podvm-maker.sh \
+          -a $DISK
+
+        # Resize the disk
+        MB=$((1024 * 1024))
+        current_size=$(qemu-img info -f $DISK_FORMAT --output json $DISK | jq '."virtual-size"')
+        # new_size=$((current_size * 110 / 100)) # increase 10% for verity - obsolete
+        luks_min_space=$((LUKS_MINIMAL_SPACE_MB * MB))
+        verity_max_space=$((VERITY_MAX_SPACE_MB * MB))
+        new_size=$((current_size + luks_min_space + verity_max_space))
+        rounded_size=$(((new_size + MB - 1) / MB * MB))
+        echo "Current disk size: $current_size"
+        echo "New disk size: $rounded_size"
+        qemu-img resize "$DISK" -f $DISK_FORMAT "${rounded_size}"
+
+        temp_dir=$(mktemp -d)
+        cd $temp_dir
+
+        temp_mount=$temp_dir/mnt
+        mkdir $temp_mount
+
+        modprobe nbd
+        qemu-nbd -c $NBD_DEVICE -f $DISK_FORMAT $DISK
+        udevadm settle
+        sleep 2
+
+        # Debug
+        fdisk -l $NBD_DEVICE
+
+        # call_fsck
+        fs_type=$(blkid -o value -s TYPE /dev/$ROOT_PN)
+        fsck.$fs_type -p /dev/$ROOT_PN
+
+        # apply_dmverity
+        # create config files and folders for systemd-repart and UKI
+        systemd-repart $NBD_DEVICE --dry-run=no --definitions=/workspace/source/konflux/verity-definitions/ --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > roothash.txt
+        RH=$(cat roothash.txt)
+
+        if [ "$RH" == "TBD" ]; then
+            echo "roothash is TBD, something went wrong. Make sure the image you are using doesn't have a /verity partition already!"
+            echo "Exiting."
+            exit 1
+        fi
+
+        # create_uki_addon
+        UKI_FOLDER=$temp_mount/EFI/Linux
+        ADDON_NAME=verity.addon.efi
+        mount /dev/$EFI_PN $temp_mount
+        efi_files=($UKI_FOLDER/*.efi)
+        if [[ ${#efi_files[@]} -eq 1 && -f "${efi_files[0]}" ]]; then
+            UKI_NAME=${efi_files[0]}
+            echo "Found UKI $UKI_NAME"
+            mkdir -p "$UKI_NAME.extra.d"
+        else
+            echo "Error: Either no .efi file or multiple .efi files found."
+            echo "Cannot create the UKI addon."
+            exit 1
+        fi
+        cd $UKI_NAME.extra.d
+        rm -f $ADDON_NAME
+
+        if [[ -n "$SB_PRIVATE_KEY" && -n "$SB_CERTIFICATE" ]]; then
+            ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
+            echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
+        fi
+        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
+        echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
+        /usr/lib/systemd/ukify inspect $ADDON_NAME
+        cd
+        umount $temp_mount
+
+        # Debug
+        fdisk -l $NBD_DEVICE
+
+        # umount
+        qemu-nbd --disconnect $NBD_DEVICE
+        REMOTESSHEOF
+
+        # script-push.sh script is intended run _inside_ podman on the ssh host and requires sudo
+        # this unquoted heredoc allows expansions for the image name
+        cat >scripts/script-push.sh <<REMOTESSHEOF
+        #!/bin/bash
+        set -ex
+
+        export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+
+        REMOTESSHEOF
+
+        # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
+        cat >>scripts/script-push.sh <<'REMOTESSHEOF'
+        dnf -y install buildah skopeo pigz jq
+
+        image_name="dm-verity-image"
+        buildah_container=$(buildah from scratch)
+        buildah add $buildah_container /output/qcow2/disk.qcow2 image/podvm.qcow2
+        buildah add $buildah_container /output/qcow2/measurements.json image/measurements.json
+        buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
+        buildah config --label description='PodVM with DM-Verity support' $buildah_container
+        buildah config --label distribution-scope=private $buildah_container
+        buildah config --label io.k8s.description='PodVM image for confidential computing with device mapper verity support' $buildah_container
+        buildah config --label name='openshift-sandboxed-containers/osc-dm-verity-image' $buildah_container
+        buildah config --label cpe='cpe:/a:redhat:confidential_compute_attestation:1.10::el9' $buildah_container
+        buildah config --label release='1' $buildah_container
+        buildah config --label url='https://github.com/confidential-devhub/coco-podvm-scripts' $buildah_container
+        buildah config --label vcs-ref='main' $buildah_container
+        buildah config --label vcs-type='git' $buildah_container
+        buildah config --label vendor='Red Hat' $buildah_container
+        buildah config --label version='1.10.0' $buildah_container
+        buildah commit $buildah_container $image_name
+        buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
+
+        MANIFEST_DIGEST=$(cat image-digest)
+
+        # Finally, record all that in our results
+        echo -n "$OUTPUT_IMAGE" | tee /tekton-results/IMAGE_URL
+        echo $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
+        # Saving also these two output in one unique variable. This task is using a matrix reference.
+        # Unfortunately it seems that in Tekton, when using a matrix, each task run is executed in isolation,
+        # and result values can't be dynamically constructed or reused across matrix combinations.
+        # In order to prevent that, we are preparing in the task itself what we'll call as `IMAGE_REFERENCE`
+        # so that we can reference that safely in the pipeline.
+        IMAGE_URL_CLEANED=$(echo -n "$OUTPUT_IMAGE" | tr -d '\n')
+        echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
+        REMOTESSHEOF
+
+        cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -euo pipefail
+
+        launch_guest() {
+          echo "Launching QEMU guest..."
+          cp /usr/share/edk2/ovmf/OVMF_CODE.fd .
+
+          /usr/libexec/qemu-kvm \
+            -machine type=q35,accel=tcg,smm=off \
+            -m 2048 \
+            -cpu max \
+            -drive file=./OVMF_CODE.fd,format=raw,if=pflash \
+            -drive file=/output/qcow2/disk.qcow2,format=qcow2 \
+            -chardev socket,id=chrtpm,path=./vtpm/swtpm.sock \
+            -tpmdev emulator,id=tpm0,chardev=chrtpm \
+            -device tpm-tis,tpmdev=tpm0 \
+            -nographic \
+            -serial file:serial.log \
+            -monitor telnet::45454,server,nowait
+        }
+
+        # Subcommand: stop
+        stop_guest() {
+          echo "Stopping QEMU guest..."
+          echo q | nc localhost 45454
+        }
+
+        # Subcommand: swtpm
+        setup_swtpm() {
+          echo "Setting up software TPM..."
+          mkdir -p vtpm
+          swtpm socket \
+            --tpmstate dir=./vtpm \
+            --ctrl type=unixio,path=./vtpm/swtpm.sock \
+            --tpm2
+        }
+
+        # Subcommand: wait
+        wait_for_guest() {
+          echo "Waiting for guest to boot..."
+          timeout=1200
+          elapsed=0
+          touch serial.log
+          while ! grep -q "login:" serial.log; do
+            sleep 2
+            elapsed="$((elapsed + 2))"
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "Guest failed to boot within ${timeout}s." >&2
+              exit 1
+            fi
+          done
+          echo "Guest booted correctly!"
+        }
+
+        # Subcommand: scrape
+        scrape_logs() {
+          # Extract the PCR block from the log.
+
+          # This assumes the block starts with "Detected vTPM PCR values:"
+          # and ends when a non-indented line appears.
+          pcr_block=$(sed -n '/Detected vTPM PCR values:/,/^[^[:space:]]/p' serial.log)
+
+          # detect line "sha***:"
+          alg=$(echo "$pcr_block" | grep -E "^[[:space:]]*sha.*:" | awk -F':' '{print $1}' | tr -d '[:space:]')
+          echo -n "{\"measurements\":{\"${alg}\":{"
+          # Now filter for PCRs 3, 9, 11 and 12.
+          echo "$pcr_block" | grep -E "^[[:space:]]*(3|9|11|12)[[:space:]]*:" | while read -r line; do
+            # Use awk to split the line at the colon.
+            index=$(echo "$line" | awk -F':' '{print $1}' | tr -d '[:space:]')
+            value=$(echo "$line" | awk -F':' '{print tolower($2)}' | tr -d '[:space:]')
+            echo -n "${need_sep:+,}\"pcr$(printf "%02d" "$index")\":\"$value\""
+            need_sep=1
+          done
+          echo "}}}"
+        }
+
+        # Main command dispatch
+        main() {
+            setup_swtpm &
+            launch_guest &
+            wait_for_guest
+            scrape_logs > /output/qcow2/measurements.json
+            stop_guest
+            jq -e . /output/qcow2/measurements.json
+        }
+
+        main "$@"
+        REMOTESSHEOF
+
+        # make scripts executable and sync them to the cloud VM.
+        chmod +x scripts/*.sh
+        rsync -ra scripts "$SSH_HOST:$BUILD_DIR"
+        rsync -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
+
+        ssh -v $SSH_ARGS "$SSH_HOST" $BUILD_DIR/scripts/script-build.sh
+        rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/*" "/tekton/results/"
+      volumeMounts:
+        - mountPath: /ssh
+          name: ssh
+          readOnly: true
+        - mountPath: /activation-key
+          name: activation-key
+    - name: sbom-generate
+      image: quay.io/konflux-ci/mobster@sha256:45298b363ff4b96a084bf77a627b3e23471dcfb821eab55a3fa49a60f0ac43f3
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        OCI_COPY_FILE_PATH=empty-oci-copy.yaml
+
+        # This generates an empty SBOM. Fix this in the future to generate one with real contents
+        echo "artifacts: []" > $OCI_COPY_FILE_PATH
+
+        IMAGE_URL=$(cat "$(results.IMAGE_URL.path)")
+        IMAGE_DIGEST=$(cat "$(results.IMAGE_DIGEST.path)")
+
+        mobster generate \
+          --output /var/workdir/sbom.json \
+          oci-artifact \
+          --oci-copy-yaml "$OCI_COPY_FILE_PATH" \
+          --image-pullspec "$IMAGE_URL" \
+          --image-digest "$IMAGE_DIGEST" \
+          --sbom-type "$SBOM_TYPE"
+
+    - name: upload-sbom
+      image: quay.io/konflux-ci/appstudio-utils:1610c1fc4cfc9c9053dbefc1146904a4df6659ef@sha256:90ac97b811073cb99a23232c15a08082b586c702b85da6200cf54ef505e3c50c
+      workingDir: /var/workdir
+      script: |
+        # Pre-select the correct credentials to work around cosign not supporting the containers-auth.json spec
+        mkdir -p /tmp/auth && select-oci-auth "$(cat "$(results.IMAGE_REFERENCE.path)")" > /tmp/auth/config.json
+        DOCKER_CONFIG=/tmp/auth cosign attach sbom --sbom sbom.json --type "$SBOM_TYPE" "$(cat "$(results.IMAGE_REFERENCE.path)")"
+    - name: report-sbom-url
+      image: quay.io/konflux-ci/yq:latest@sha256:15d0238843d954ee78c9c190705eb8b36f6e52c31434183c37d99a80841a635a
+      script: |
+        #!/bin/bash
+        REPO=${OUTPUT_IMAGE%:*}
+        echo "Found that ${REPO} is the repository for ${OUTPUT_IMAGE}"
+        SBOM_DIGEST=$(sha256sum sbom.json | awk '{ print $1 }')
+        echo "Found that ${SBOM_DIGEST} is the SBOM digest"
+        echo -n "${REPO}@sha256:${SBOM_DIGEST}" | tee $(results.SBOM_BLOB_URL.path)
+      workingDir: /var/workdir
+  volumes:
+    - emptyDir: {}
+      name: workdir
+    - emptyDir: {}
+      name: varlibcontainers
+    - name: ssh
+      secret:
+        optional: false
+        secretName: multi-platform-ssh-$(context.taskRun.name)
+    - name: activation-key
+      secret:
+        optional: true
+        secretName: $(params.ACTIVATION_KEY)
