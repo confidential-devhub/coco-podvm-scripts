@@ -164,7 +164,7 @@ spec:
         # Based on https://access.redhat.com/solutions/7021610
         GRAPHROOT=$(podman info | grep graphRoot: | cut -f 2 -d ":")
         echo "Changing SELinux labels for the container storage at $GRAPHROOT"
-        semanage fcontext -a -e /var/lib/containers $GRAPHROOT
+        semanage fcontext -a -t container_var_lib_t ${GRAPHROOT}'(/.*)?'
         restorecon -R -v $GRAPHROOT
 
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
