@@ -31,6 +31,10 @@ spec:
     - name: PODVM_PAYLOAD_IMAGE
       description: URL to the PodVM payload image.
       type: string
+    - name: BUILD_TYPE
+      type: string
+      description: Type of image to build (debug or production)
+      default: production
   results:
     - description: Digest of the manifest list just built
       name: IMAGE_DIGEST
@@ -243,12 +247,22 @@ spec:
         tar -czvf ${root_tar_file} *
         popd
 
-        virt-customize \
-          --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
-          --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
-          --copy-in ${root_tar_file}:/tmp/ \
-          --run /workspace/scripts/script-podvm-maker.sh \
-          -a $DISK
+        if [ "$BUILD_TYPE" = "debug" ]; then
+          virt-customize \
+            --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
+            --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
+            --copy-in ${root_tar_file}:/tmp/ \
+            --run /workspace/scripts/script-podvm-maker.sh \
+            --root-password password:debug123 \
+            -a $DISK
+        else
+          virt-customize \
+            --copy-in /workspace/podvm-binaries.tar.gz:/tmp/ \
+            --copy-in /workspace/pause-bundle.tar.gz:/tmp/ \
+            --copy-in ${root_tar_file}:/tmp/ \
+            --run /workspace/scripts/script-podvm-maker.sh \
+            -a $DISK
+        fi
 
         # Resize the disk
         MB=$((1024 * 1024))
@@ -339,12 +353,10 @@ spec:
         cat >>scripts/script-push.sh <<'REMOTESSHEOF'
         dnf -y install buildah skopeo pigz jq
 
-        image_name="dm-verity-image"
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container /output/qcow2/disk.qcow2 image/podvm.qcow2
         buildah add $buildah_container /output/qcow2/measurements.json image/measurements.json
         buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
-        buildah config --label description='PodVM with DM-Verity support' $buildah_container
         buildah config --label distribution-scope=private $buildah_container
         buildah config --label io.k8s.description='PodVM image for confidential computing with device mapper verity support' $buildah_container
         buildah config --label name='osc-dm-verity-image' $buildah_container
@@ -354,6 +366,13 @@ spec:
         buildah config --label vcs-type='git' $buildah_container
         buildah config --label vendor='Red Hat' $buildah_container
         buildah config --label version='1.10.0' $buildah_container
+        if [ "$BUILD_TYPE" = "debug" ]; then
+          image_name="dm-verity-image-debug"
+          buildah config --label description='PodVM with DM-Verity support (DEBUG)' $buildah_container
+        else
+          image_name="dm-verity-image"
+          buildah config --label description='PodVM with DM-Verity support' $buildah_container
+        fi
         buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 

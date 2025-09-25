@@ -30,6 +30,8 @@ spec:
       value: 5d
     - name: dockerfile
       value: Dockerfile
+    - name: build-type
+      value: "debug"
   pipelineRef:
     name: build-pipeline
   taskRunTemplate:
