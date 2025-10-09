@@ -1,16 +1,14 @@
 [Unit]
-# This unit runs right after the repart service is done and
-# the scratch partition appears
-Description=Format LUKS Scratch Partition
-Requires=systemd-repart.service
+# This unit runs right after the repart service is done
+Description=Creates LUKS Scratch Partition
 After=systemd-repart.service
-BindsTo=dev-disk-by\x2dpartlabel-scratch.device
+Wants=kata-agent.service
 Before=kata-agent.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/format-scratch.sh
+ExecStart=/usr/local/sbin/create-scratch.sh
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target
