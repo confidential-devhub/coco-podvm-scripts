@@ -129,8 +129,9 @@ function get_podvm_image_format() {
 # Output: vhddisk image
 function convert_qcow2_to_vhd() {
     qcow2disk=${1}
-    rawdisk="$(basename -s qcow2 "${1}")raw"
-    vhddisk="$(basename -s qcow2 "${1}")vhd"
+    path="$(dirname "${1}")"
+    rawdisk="${path}/$(basename -s qcow2 "${1}")raw"
+    vhddisk="${path}/$(basename -s qcow2 "${1}")vhd"
     echo "Qcow2 disk name: ${qcow2disk}"
     echo "Raw disk name: ${rawdisk}"
     echo "VHD disk name: ${vhddisk}"
@@ -154,7 +155,8 @@ function convert_qcow2_to_vhd() {
 # Output: vhddisk image
 function resize_and_convert_raw_to_vhd_image() {
     rawdisk=${1}
-    vhddisk="$(basename -s raw "${1}")vhd"
+    path="$(dirname "${1}")"
+    vhddisk="${path}/$(basename -s raw "${1}")vhd"
 
     echo "Raw disk name: ${rawdisk}"
     echo "VHD disk name: ${vhddisk}"
