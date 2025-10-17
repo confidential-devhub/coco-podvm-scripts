@@ -76,7 +76,7 @@ spec:
         set of values is determined by the configuration of the multi-platform-controller.
       type: array
       default:
-        - linux-test-amd64
+        - linux-test/amd64
   results:
     - description: ""
       name: CHAINS-GIT_URL
