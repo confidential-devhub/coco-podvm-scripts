@@ -196,6 +196,8 @@ spec:
             value: quay.io/redhat-user-workloads/ose-osc-tenant/build-dm-verity-image-task:on-pr-9891281127d389ed7419f60b8373a14322914513
           - name: kind
             value: task
+          - name: k
+            value: t
       when:
         - input: $(tasks.init.results.build)
           operator: in
