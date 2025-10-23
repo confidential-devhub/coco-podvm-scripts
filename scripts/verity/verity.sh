@@ -202,6 +202,11 @@ function apply_dmverity()
     RH=$(cat $WORKDIR/roothash.txt)
     rm -rf $WORKDIR
 
+    partprobe $NBD_DEVICE
+    # Allow udev events to settle again after partprobe
+    udevadm settle
+    sleep 1 # Optional small sleep just in case
+
     if [ "$RH" == "TBD" ]; then
         echo "roothash is TBD, something went wrong. Make sure the image you are using doesn't have a /verity partition already!"
         echo "Exiting."
