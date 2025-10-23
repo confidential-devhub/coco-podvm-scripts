@@ -185,7 +185,7 @@ spec:
 
         REMOTESSHEOF
 
-        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
+        cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
         #!/bin/bash
         set -ex
 
@@ -237,7 +237,7 @@ spec:
           --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
           --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
           --copy-in ${root_tar_file}:/tmp/ \
-          --run /workspace/scripts/script-podvm-maker.sh \
+          --run /workspace/scripts/podvm-setup.sh \
           -a $DISK
 
         # Resize the disk
