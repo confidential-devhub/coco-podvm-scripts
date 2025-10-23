@@ -170,6 +170,8 @@ spec:
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
+        time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
+
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
 
         time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh
@@ -183,6 +185,26 @@ spec:
           "$BUILDAH_IMAGE" \
           /script-push.sh
 
+        REMOTESSHEOF
+
+        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
+        #!/bin/bash
+        set -ex
+
+        DISK=/output/qcow2/disk.qcow2
+
+        root_tar_dir=/workspace/source/konflux/podvm-root
+        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
+        pushd ${root_tar_dir}
+        tar -czvf ${root_tar_file} *
+        popd
+
+        virt-customize \
+          --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
+          --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
+          --copy-in ${root_tar_file}:/tmp/ \
+          --run /workspace/scripts/podvm-setup.sh \
+          -a $DISK
         REMOTESSHEOF
 
         cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
@@ -217,7 +239,7 @@ spec:
 
         ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
         coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
-        
+
         DISK=/output/qcow2/disk.qcow2
         NBD_DEVICE=/dev/nbd0
         EFI_PN=nbd0p1
@@ -226,19 +248,6 @@ spec:
         LUKS_MINIMAL_SPACE_MB=2500
         VERITY_MAX_SPACE_MB=512
         DISK_FORMAT=qcow2
-
-        root_tar_dir=/workspace/source/konflux/podvm-root
-        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
-        pushd ${root_tar_dir}
-        tar -czvf ${root_tar_file} *
-        popd
-
-        virt-customize \
-          --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
-          --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
-          --copy-in ${root_tar_file}:/tmp/ \
-          --run /workspace/scripts/podvm-setup.sh \
-          -a $DISK
 
         # Resize the disk
         MB=$((1024 * 1024))
