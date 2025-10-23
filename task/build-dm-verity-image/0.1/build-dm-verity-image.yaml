@@ -149,7 +149,13 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
-  
+
+        # Define paths
+        DISK_PROD=/output/qcow2/disk.qcow2
+        DISK_DEBUG=/output/qcow2/disk-debug.qcow2
+        MEASUREMENTS_PROD=/output/qcow2/measurements.json
+        MEASUREMENTS_DEBUG=/output/qcow2/measurements-debug.json
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
@@ -168,20 +174,21 @@ spec:
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
-        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
+        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK_PROD,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
-        # Create debug variant - copy before dm-verity and set root password
-        time sudo podman exec -t --latest cp /output/qcow2/disk.qcow2 /output/qcow2/disk-debug.qcow2
-        time sudo podman exec -t --latest virt-customize --root-password password:1234 -a /output/qcow2/disk-debug.qcow2
+        # Create debug variant - copy and set root password
+        time sudo podman exec -t --latest cp $DISK_PROD $DISK_DEBUG
+        time sudo podman exec -t --latest virt-customize --root-password password:1234 -a $DISK_DEBUG
 
-        # Apply dm-verity to production disk only
-        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh /output/qcow2/disk.qcow2
+        # Apply dm-verity to both production and debug disks
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK_PROD
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK_DEBUG
 
         # Measure both production and debug disks
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk-debug.qcow2 /output/qcow2/measurements-debug.json
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh $DISK_PROD $MEASUREMENTS_PROD
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh $DISK_DEBUG $MEASUREMENTS_DEBUG
 
         # Push production image (updates Tekton results)
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
@@ -191,7 +198,7 @@ spec:
           -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
-          /script-push.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
+          /script-push.sh $DISK_PROD $MEASUREMENTS_PROD
 
         # Push debug image (no Tekton results update)
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
@@ -200,7 +207,7 @@ spec:
           -v /var/lib/containers/storage:/var/lib/containers/storage \
           -v $BUILD_DIR/scripts/script-debug-push.sh:/script-debug-push.sh \
           "$BUILDAH_IMAGE" \
-          /script-debug-push.sh /output/qcow2/disk-debug.qcow2 /output/qcow2/measurements-debug.json
+          /script-debug-push.sh $DISK_DEBUG $MEASUREMENTS_DEBUG
 
         REMOTESSHEOF
 
