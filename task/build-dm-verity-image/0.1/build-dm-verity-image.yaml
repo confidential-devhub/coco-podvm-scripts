@@ -174,7 +174,7 @@ spec:
 
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh /output/qcow2/disk.qcow2
 
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
 
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
@@ -392,6 +392,21 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
+        # This script measures TPM PCR values from a VM disk image
+        # Arguments:
+        #   $1: DISK - Path to the qcow2 disk image to boot and measure
+        #   $2: OUTPUT_FILE - Path where to write the measurements JSON file
+
+        # Accept disk path and output file as arguments
+        if [ -z "$1" ] || [ -z "$2" ]; then
+          echo "Error: Disk path and output file not provided"
+          echo "Usage: $0 <disk-path> <output-measurements-file>"
+          exit 1
+        fi
+
+        DISK="$1"
+        OUTPUT_FILE="$2"
+
         launch_guest() {
           echo "Launching QEMU guest..."
           cp /usr/share/edk2/ovmf/OVMF_CODE.fd .
@@ -401,7 +416,7 @@ spec:
             -m 2048 \
             -cpu max \
             -drive file=./OVMF_CODE.fd,format=raw,if=pflash \
-            -drive file=/output/qcow2/disk.qcow2,format=qcow2 \
+            -drive file="$DISK",format=qcow2 \
             -chardev socket,id=chrtpm,path=./vtpm/swtpm.sock \
             -tpmdev emulator,id=tpm0,chardev=chrtpm \
             -device tpm-tis,tpmdev=tpm0 \
@@ -470,9 +485,12 @@ spec:
             setup_swtpm &
             launch_guest &
             wait_for_guest
-            scrape_logs > /output/qcow2/measurements.json
+            scrape_logs > "$OUTPUT_FILE"
             stop_guest
-            jq -e . /output/qcow2/measurements.json
+            jq -e . "$OUTPUT_FILE"
+
+            rm -f serial.log
+            rm -rf vtpm/
         }
 
         main "$@"
