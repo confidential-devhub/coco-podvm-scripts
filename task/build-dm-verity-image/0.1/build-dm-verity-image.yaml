@@ -172,7 +172,7 @@ spec:
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
-        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh /output/qcow2/disk.qcow2
 
         time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh
 
@@ -237,10 +237,18 @@ spec:
         #!/bin/bash
         set -ex
 
+        # Accept disk path as first argument
+        if [ -z "$1" ]; then
+          echo "Error: Disk path not provided"
+          echo "Usage: $0 <disk-path>"
+          exit 1
+        fi
+
+        DISK="$1"
+
         ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
         coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
 
-        DISK=/output/qcow2/disk.qcow2
         NBD_DEVICE=/dev/nbd0
         EFI_PN=nbd0p1
         ROOT_PN=nbd0p2
