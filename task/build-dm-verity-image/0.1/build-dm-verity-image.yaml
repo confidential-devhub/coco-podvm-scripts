@@ -149,7 +149,11 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
-  
+
+        # Define paths
+        DISK=/output/qcow2/disk.qcow2
+        MEASUREMENTS=/output/qcow2/measurements.json
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
@@ -168,14 +172,17 @@ spec:
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
-        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=/output/qcow2/disk.qcow2,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
+        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
-        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh /output/qcow2/disk.qcow2
+        # Apply dm-verity
+        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK
 
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
+        # Measure disk
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh $DISK $MEASUREMENTS
 
+        # Push image
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
           -v $(pwd)/output:/output \
@@ -183,7 +190,7 @@ spec:
           -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
-          /script-push.sh
+          /script-push.sh $DISK $MEASUREMENTS
 
         REMOTESSHEOF
 
@@ -353,12 +360,26 @@ spec:
 
         # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
         cat >>scripts/script-push.sh <<'REMOTESSHEOF'
+        # This script pushes a PodVM disk image to a container registry
+        # Arguments:
+        #   $1: DISK_PATH - Path to the qcow2 disk image
+        #   $2: MEASUREMENTS_PATH - Path to the measurements JSON file
+
+        if [ -z "$1" ] || [ -z "$2" ]; then
+          echo "Error: Disk path and measurements path not provided"
+          echo "Usage: $0 <disk-path> <measurements-path> [suffix]"
+          exit 1
+        fi
+
+        DISK_PATH="$1"
+        MEASUREMENTS_PATH="$2"
+
         dnf -y install buildah skopeo pigz jq
 
         image_name="dm-verity-image"
         buildah_container=$(buildah from scratch)
-        buildah add $buildah_container /output/qcow2/disk.qcow2 image/podvm.qcow2
-        buildah add $buildah_container /output/qcow2/measurements.json image/measurements.json
+        buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
+        buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
         buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
         buildah config --label description='PodVM with DM-Verity support' $buildah_container
         buildah config --label distribution-scope=private $buildah_container
