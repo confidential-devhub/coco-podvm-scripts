@@ -172,10 +172,18 @@ spec:
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
+        # Create debug variant - copy before dm-verity and set root password
+        time sudo podman exec -t --latest cp /output/qcow2/disk.qcow2 /output/qcow2/disk-debug.qcow2
+        time sudo podman exec -t --latest virt-customize --root-password password:1234 -a /output/qcow2/disk-debug.qcow2
+
+        # Apply dm-verity to production disk only
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh /output/qcow2/disk.qcow2
 
+        # Measure both production and debug disks
         time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
+        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh /output/qcow2/disk-debug.qcow2 /output/qcow2/measurements-debug.json
 
+        # Push production image (updates Tekton results)
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
           -v $(pwd)/output:/output \
@@ -183,7 +191,16 @@ spec:
           -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
-          /script-push.sh
+          /script-push.sh /output/qcow2/disk.qcow2 /output/qcow2/measurements.json
+
+        # Push debug image (no Tekton results update)
+        time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
+          -v $BUILD_DIR/.docker:/.docker \
+          -v $(pwd)/output:/output \
+          -v /var/lib/containers/storage:/var/lib/containers/storage \
+          -v $BUILD_DIR/scripts/script-debug-push.sh:/script-debug-push.sh \
+          "$BUILDAH_IMAGE" \
+          /script-debug-push.sh /output/qcow2/disk-debug.qcow2 /output/qcow2/measurements-debug.json
 
         REMOTESSHEOF
 
@@ -344,12 +361,26 @@ spec:
 
         # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
         cat >>scripts/script-push.sh <<'REMOTESSHEOF'
+        # This script pushes a PodVM disk image to a container registry
+        # Arguments:
+        #   $1: DISK_PATH - Path to the qcow2 disk image
+        #   $2: MEASUREMENTS_PATH - Path to the measurements JSON file
+
+        if [ -z "$1" ] || [ -z "$2" ]; then
+          echo "Error: Disk path and measurements path not provided"
+          echo "Usage: $0 <disk-path> <measurements-path>"
+          exit 1
+        fi
+
+        DISK_PATH="$1"
+        MEASUREMENTS_PATH="$2"
+
         dnf -y install buildah skopeo pigz jq
 
         image_name="dm-verity-image"
         buildah_container=$(buildah from scratch)
-        buildah add $buildah_container /output/qcow2/disk.qcow2 image/podvm.qcow2
-        buildah add $buildah_container /output/qcow2/measurements.json image/measurements.json
+        buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
+        buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
         buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
         buildah config --label description='PodVM with DM-Verity support' $buildah_container
         buildah config --label distribution-scope=private $buildah_container
@@ -377,6 +408,67 @@ spec:
         # so that we can reference that safely in the pipeline.
         IMAGE_URL_CLEANED=$(echo -n "$OUTPUT_IMAGE" | tr -d '\n')
         echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
+        REMOTESSHEOF
+
+        # script-debug-push.sh script is intended run _inside_ podman on the ssh host and requires sudo
+        # this unquoted heredoc allows expansions for the image name
+        cat >scripts/script-debug-push.sh <<REMOTESSHEOF
+        #!/bin/bash
+        set -ex
+
+        export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+
+        REMOTESSHEOF
+
+        # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
+        cat >>scripts/script-debug-push.sh <<'REMOTESSHEOF'
+        # This script pushes a DEBUG PodVM disk image to a container registry
+        # Arguments:
+        #   $1: DISK_PATH - Path to the qcow2 disk image (debug variant)
+        #   $2: MEASUREMENTS_PATH - Path to the measurements JSON file (debug variant)
+
+        if [ -z "$1" ] || [ -z "$2" ]; then
+          echo "Error: Disk path and measurements path not provided"
+          echo "Usage: $0 <disk-path> <measurements-path>"
+          exit 1
+        fi
+
+        DISK_PATH="$1"
+        MEASUREMENTS_PATH="$2"
+
+        dnf -y install buildah skopeo pigz jq
+
+        echo "=========================================="
+        echo "Building and pushing DEBUG image"
+        echo "=========================================="
+
+        OUTPUT_IMAGE_DEBUG="${OUTPUT_IMAGE}-debug"
+        image_name="dm-verity-image-debug"
+        buildah_container=$(buildah from scratch)
+        buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
+        buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
+        buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
+        buildah config --label description='PodVM DEBUG with DM-Verity, root password enabled' $buildah_container
+        buildah config --label distribution-scope=private $buildah_container
+        buildah config --label io.k8s.description='PodVM DEBUG image for development with device mapper verity support (root password: 1234)' $buildah_container
+        buildah config --label name='openshift-sandboxed-containers/osc-dm-verity-image' $buildah_container
+        buildah config --label cpe='cpe:/a:redhat:confidential_compute_attestation:1.10::el9' $buildah_container
+        buildah config --label release='1' $buildah_container
+        buildah config --label url='https://github.com/confidential-devhub/coco-podvm-scripts' $buildah_container
+        buildah config --label vcs-ref='main' $buildah_container
+        buildah config --label vcs-type='git' $buildah_container
+        buildah config --label vendor='Red Hat' $buildah_container
+        buildah config --label version='1.10.0' $buildah_container
+        buildah config --label image.variant='debug' $buildah_container
+        buildah commit $buildah_container $image_name
+        buildah push --digestfile image-digest-debug --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE_DEBUG
+
+        MANIFEST_DIGEST_DEBUG=$(cat image-digest-debug)
+
+        echo "=========================================="
+        echo "Debug image pushed to: $OUTPUT_IMAGE_DEBUG"
+        echo "Debug image digest: $MANIFEST_DIGEST_DEBUG"
+        echo "=========================================="
         REMOTESSHEOF
 
         cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
