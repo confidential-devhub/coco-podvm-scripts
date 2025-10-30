@@ -245,7 +245,7 @@ spec:
         current_size=$(qemu-img info -f $DISK_FORMAT --output json $DISK | jq '."virtual-size"')
         # new_size=$((current_size * 110 / 100)) # increase 10% for verity - obsolete
         luks_min_space=$((LUKS_MINIMAL_SPACE_MB * MB))
-        verity_max_space=$((VERITY_MAX_SPACE_MB * MB))
+        verity_max_space=$((current_size * 7 / 100))
         new_size=$((current_size + luks_min_space + verity_max_space))
         rounded_size=$(((new_size + MB - 1) / MB * MB))
         echo "Current disk size: $current_size"
@@ -269,6 +269,10 @@ spec:
         # call_fsck
         fs_type=$(blkid -o value -s TYPE /dev/$ROOT_PN)
         fsck.$fs_type -p /dev/$ROOT_PN
+
+        # update the values in the conf files
+        sed -i "s|{INSERT_HERE}|$current_size|g" /workspace/source/konflux/verity-definitions/root.conf
+        sed -i "s|{INSERT_HERE}|$verity_max_space|g" /workspace/source/konflux/verity-definitions/verity.conf
 
         # apply_dmverity
         # create config files and folders for systemd-repart and UKI
