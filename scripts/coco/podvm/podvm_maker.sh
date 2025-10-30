@@ -17,6 +17,8 @@ tar -xzvf /tmp/pause-bundle.tar.gz -C /
 # TODO: move to payload ?
 tar -xzvf /tmp/luks-config.tar.gz -C /
 
+dnf remove -y cloud-init WALinuxAgent
+
 # fixes a failure of the podns@netns service #TODO: still needed?
 semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
 
