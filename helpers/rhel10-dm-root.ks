@@ -22,14 +22,14 @@ firewall --disabled
 # Use CDROM installation media
 cdrom
 
-# Root password
+# Root password. It will be reset by WALinuxAgent
 rootpw --allow-ssh redhat123
 
 # Enable SELinux
 selinux --enforcing
 
 # System services
-services --enabled="sshd,NetworkManager,nm-cloud-setup.service,nm-cloud-setup.timer,cloud-init,cloud-init-local,cloud-config,cloud-final" #waagent
+services --enabled="sshd,NetworkManager,nm-cloud-setup.service,nm-cloud-setup.timer,cloud-init,cloud-init-local,cloud-config,cloud-final,waagent"
 
 # System timezone
 timezone Etc/UTC --utc
@@ -51,7 +51,7 @@ redhat-release
 -linux-firmware*
 -iwl*
 
-#WALinuxAgent
+WALinuxAgent
 cloud-init
 cloud-utils-growpart
 
@@ -111,7 +111,7 @@ rpm -e grub2-efi-x64 grub2-common grub2-tools grub2-tools-minimal grubby os-prob
 yum versionlock add shim-x64
 
 # Deprovision and prepare for Azure
-#/usr/sbin/waagent -force -deprovision
+/usr/sbin/waagent -force -deprovision
 
 # Fstrim root
 fstrim -v / ||:
