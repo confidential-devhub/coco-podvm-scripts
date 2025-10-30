@@ -149,7 +149,14 @@ spec:
 
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
-  
+
+        # Apply selinux labels to the container storage
+        # Based on https://access.redhat.com/solutions/7021610
+        GRAPHROOT=$(podman info | grep graphRoot: | cut -f 2 -d ":")
+        echo "Changing SELinux labels for the container storage at $GRAPHROOT"
+        #semanage fcontext -a -e /var/lib/containers $GRAPHROOT
+        restorecon -R -v $GRAPHROOT
+ 
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
