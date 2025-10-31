@@ -154,7 +154,7 @@ spec:
         # Based on https://access.redhat.com/solutions/7021610
         GRAPHROOT=$(sudo podman info | grep graphRoot: | cut -f 2 -d ":")
         echo "Changing SELinux labels for the container storage at $GRAPHROOT"
-        #semanage fcontext -a -e /var/lib/containers $GRAPHROOT
+        semanage fcontext -a -e /var/lib/containers $GRAPHROOT
         restorecon -R -v $GRAPHROOT
 
         echo "Listing container storage directories for debugging"
