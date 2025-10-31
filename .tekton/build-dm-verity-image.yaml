@@ -158,6 +158,16 @@ spec:
         ls /var/lib/containers || true
         ls $GRAPHROOT || true
 
+        loops=0
+        while [ ! -d /var/lib/containers/sigstore ]; do
+          sleep 60
+          loops=$((loops + 1))
+          if [ $loops -gt 10 ]; then
+            echo "Timeout waiting for /var/lib/containers/sigstore to appear"
+            exit 1
+          fi
+        done
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
