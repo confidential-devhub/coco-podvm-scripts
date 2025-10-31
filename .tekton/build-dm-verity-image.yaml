@@ -156,7 +156,16 @@ spec:
         echo "Changing SELinux labels for the container storage at $GRAPHROOT"
         #semanage fcontext -a -e /var/lib/containers $GRAPHROOT
         restorecon -R -v $GRAPHROOT
- 
+
+        echo "Listing container storage directories for debugging"
+        echo "-----"
+        echo "/var/lib/containers/storage:"
+        ls /var/lib/containers || true
+        echo "-----"
+        echo "$GRAPHROOT:"
+        ls $GRAPHROOT || true
+        echo "-----"
+
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
