@@ -24,6 +24,7 @@ sudo podman run --rm \
     -v $QCOW2:/disk.qcow2 \
     $CERT_OPTIONS \
     -v /lib/modules:/lib/modules:ro,Z \
+    --env ORG_ID=${ORG_ID} --env ACTIVATION_KEY=${ACTIVATION_KEY} \
     --user 0 \
     --security-opt=apparmor=unconfined \
     --security-opt=seccomp=unconfined \

@@ -1,6 +1,12 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then
+    subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}
+    dnf install -y afterburn e2fsprogs
+else
+    dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+fi
+
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
