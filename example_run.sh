@@ -18,6 +18,7 @@ sudo podman build -t coco-podvm \
     -f Dockerfile .
 
 [[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
+[[ -n "$AUTHFILE" ]] && run_extras+=" -v ${AUTHFILE}:/authfile:ro,z "
 
 sudo podman run --rm \
     --privileged \
@@ -32,4 +33,3 @@ sudo podman run --rm \
     --mount type=bind,source=/run/udev,target=/run/udev \
     $run_extras \
     localhost/coco-podvm
-
