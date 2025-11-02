@@ -1,15 +1,12 @@
 FROM registry.access.redhat.com/ubi9/ubi:latest
 
-ARG ORG_ID
-ARG ACTIVATION_KEY
-
 # This registering RHEL when building on an unsubscribed system
 # If you are running a UBI container on a registered and subscribed RHEL host,
 # the main RHEL Server repository is enabled inside the standard UBI container.
 # Provide the associated ARG variables to register.
-RUN if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then \
+RUN --mount=type=secret,id=org_id --mount=type=secret,id=activation_key if [[ -f /run/secrets/org_id && -f /run/secrets/activation_key ]]; then \
     rm -f /etc/rhsm-host && rm -f /etc/pki/entitlement-host; \
-    subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}; \
+    subscription-manager register --org=$(cat /run/secrets/org_id) --activationkey=$(cat /run/secrets/activation_key); \
     fi
 
 RUN dnf -y update
