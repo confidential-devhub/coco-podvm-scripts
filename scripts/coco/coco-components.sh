@@ -79,11 +79,17 @@ ls $ARTIFACTS_FOLDER
 
 echo ""
 EXTRA_ARGS=""
+SM_REGISTER=""
 [[ -n "$ROOT_PASSWORD" ]] && EXTRA_ARGS=" --root-password password:${ROOT_PASSWORD} "
-virt-customize \
+[[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && SM_REGISTER=(--run-command "subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}") || SM_REGISTER=()
+
+virt-customize --memsize 8192 \
+    "${SM_REGISTER[@]}" \
     --copy-in $ARTIFACTS_FOLDER/podvm-binaries.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/pause-bundle.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
     --run $ARTIFACTS_FOLDER/podvm_maker.sh \
     ${EXTRA_ARGS} \
     -a $INPUT_IMAGE
+
+[[ ${#SM_REGISTER[@]} -gt 0 ]] && virt-customize --memsize 8192 --run-command "subscription-manager unregister" -a $INPUT_IMAGE || true

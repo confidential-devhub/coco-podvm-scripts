@@ -1,6 +1,12 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+# See SM_REGISTER in scripts/coco/coco-components.sh for subscription-manager setup
+if subscription-manager identity &>/dev/null; then
+    dnf install -y afterburn e2fsprogs && dnf clean all
+else
+    dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+fi
+
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
