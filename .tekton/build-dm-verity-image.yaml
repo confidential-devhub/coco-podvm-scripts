@@ -150,7 +150,6 @@ spec:
 
         # Apply selinux labels to the container storage
         # Based on https://access.redhat.com/solutions/7021610
-        GRAPHROOT=$(sudo podman info | grep graphRoot: | cut -f 2 -d ":")
         #echo "Changing SELinux labels for the container storage at $GRAPHROOT"
         #semanage fcontext -a -e /var/lib/containers $GRAPHROOT
         #restorecon -R -v $GRAPHROOT
@@ -165,6 +164,7 @@ spec:
           fi
         done
 
+        GRAPHROOT=$(sudo podman info | grep graphRoot: | cut -f 2 -d ":")
         ls /var/lib/containers || true
         ls $GRAPHROOT || true
 
