@@ -15,15 +15,18 @@ fi
 
 sudo podman build -t coco-podvm \
     ${subscription} \
-    -f Dockerfile .
+    -f Dockerfile . || printf "\n\n!!! Faild to build coco-podvm, will used cached image if exist !!!\n"
 
 [[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
+[[ -n "$AUTHFILE" ]] && run_extras+=" -v ${AUTHFILE}:/authfile:ro,z "
+[[ -n "$NVIDIA" ]] && run_extras+=" --env NVIDIA=${NVIDIA} "
 
 sudo podman run --rm \
     --privileged \
     -v $QCOW2:/disk.qcow2 \
     $CERT_OPTIONS \
     -v /lib/modules:/lib/modules:ro,Z \
+    --env ORG_ID=${ORG_ID} --env ACTIVATION_KEY=${ACTIVATION_KEY} \
     --user 0 \
     --security-opt=apparmor=unconfined \
     --security-opt=seccomp=unconfined \
@@ -31,4 +34,3 @@ sudo podman run --rm \
     --mount type=bind,source=/run/udev,target=/run/udev \
     $run_extras \
     localhost/coco-podvm
-

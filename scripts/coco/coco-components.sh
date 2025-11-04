@@ -1,4 +1,5 @@
 #! /bin/bash
+set -eo pipefail
 
 INPUT_IMAGE=$1
 
@@ -80,12 +81,17 @@ ls $ARTIFACTS_FOLDER
 echo ""
 EXTRA_ARGS=""
 [[ -n "$ROOT_PASSWORD" ]] && EXTRA_ARGS=" --root-password password:${ROOT_PASSWORD} "
-virt-customize \
+[[ -n "$NVIDIA" ]] && EXTRA_ARGS+=" --run $ARTIFACTS_FOLDER/podvm_nvidia_maker.sh "
+tmp_podvm_maker=$(mktemp --suffix='.sh')
+envsubst '$ORG_ID $ACTIVATION_KEY' <  $ARTIFACTS_FOLDER/podvm_maker.sh > $tmp_podvm_maker
+virt-customize --memsize 8192 \
     --copy-in $ARTIFACTS_FOLDER/podvm-binaries.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/pause-bundle.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
-    --run $ARTIFACTS_FOLDER/podvm_maker.sh \
+    --run $tmp_podvm_maker \
     --uninstall cloud-init \
     --uninstall WALinuxAgent \
     ${EXTRA_ARGS} \
     -a $INPUT_IMAGE
+
+rm $tmp_podvm_maker
