@@ -12,7 +12,15 @@ Label=scratch
 Encrypt=key-file
 Format=ext4" > $WORKDIR/scratch.conf
 
-SYSTEMD_LOG_LEVEL=debug systemd-repart --dry-run=no --key-file=$KEY_PATH --definitions=$WORKDIR --no-pager
+out=$(SYSTEMD_LOG_LEVEL=debug systemd-repart --dry-run=no --key-file=$KEY_PATH --definitions=$WORKDIR --no-pager --json=pretty)
+
+echo $out
+
+sda=$(echo $out | jq -r '.[] | select(.activity=="create") | .node')
+
+echo $sda
+
+cryptsetup luksOpen $sda scratch --key-file $KEY_PATH
 
 rm -rf $WORKDIR
 
