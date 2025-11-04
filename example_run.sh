@@ -19,6 +19,7 @@ sudo podman build -t coco-podvm \
 
 [[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
 [[ -n "$AUTHFILE" ]] && run_extras+=" -v ${AUTHFILE}:/authfile:ro,z "
+[[ -n "$NVIDIA" ]] && run_extras+=" --env NVIDIA=${NVIDIA} "
 
 sudo podman run --rm \
     --privileged \

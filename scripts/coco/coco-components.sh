@@ -81,6 +81,7 @@ ls $ARTIFACTS_FOLDER
 echo ""
 EXTRA_ARGS=""
 [[ -n "$ROOT_PASSWORD" ]] && EXTRA_ARGS=" --root-password password:${ROOT_PASSWORD} "
+[[ -n "$NVIDIA" ]] && EXTRA_ARGS+=" --run $ARTIFACTS_FOLDER/podvm_nvidia_maker.sh "
 tmp_podvm_maker=$(mktemp --suffix='.sh')
 envsubst '$ORG_ID $ACTIVATION_KEY' <  $ARTIFACTS_FOLDER/podvm_maker.sh > $tmp_podvm_maker
 virt-customize --memsize 8192 \
