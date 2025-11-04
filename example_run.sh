@@ -19,6 +19,7 @@ fi
 
 [[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
 [[ -n "$AUTHFILE" ]] && run_extras+=" -v ${AUTHFILE}:/authfile:ro,z "
+[[ -n "$NVIDIA" ]] && run_extras+=" --env NVIDIA=${NVIDIA} "
 
 [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && sudo -E podman secret create activation_key --env ACTIVATION_KEY && sudo -E podman secret create org_id --env ORG_ID && \
     SM_SECRET_RUN_CMD="--secret activation_key,type=env,target=ACTIVATION_KEY --secret org_id,type=env,target=ORG_ID "
