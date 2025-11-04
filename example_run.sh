@@ -15,7 +15,7 @@ fi
 
 sudo podman build -t coco-podvm \
     ${subscription} \
-    -f Dockerfile .
+    -f Dockerfile . || printf "\n\n!!! Faild to build coco-podvm, will used cached image if exist !!!\n"
 
 [[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
 [[ -n "$AUTHFILE" ]] && run_extras+=" -v ${AUTHFILE}:/authfile:ro,z "
