@@ -1,4 +1,5 @@
 #! /bin/bash
+set -eo pipefail
 
 INPUT_IMAGE=$1
 

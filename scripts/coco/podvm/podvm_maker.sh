@@ -1,4 +1,5 @@
 #! /bin/bash
+set -eo pipefail
 
 if subscription-manager identity &>/dev/null; then
     dnf install -y afterburn e2fsprogs && dnf clean all
