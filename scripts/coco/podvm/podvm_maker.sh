@@ -1,4 +1,5 @@
 #! /bin/bash
+set -eo pipefail
 
 if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then
     subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}
