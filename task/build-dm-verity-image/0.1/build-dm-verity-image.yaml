@@ -203,6 +203,10 @@ spec:
         tar -xzvf /tmp/pause-bundle.tar.gz -C /
         tar -xzvf /tmp/podvm-root.tar.gz -C /
 
+        # Use a custom /etc/agent-config.toml to enable image signature
+        # verification.
+        sed -i "s,/run/peerpod/agent-config.toml,/etc/agent-config.toml,g" /etc/systemd/system/kata-agent.service
+
         dnf remove -y cloud-init WALinuxAgent
 
         # fixes a failure of the podns@netns service

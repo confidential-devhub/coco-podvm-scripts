@@ -17,6 +17,11 @@ tar -xzvf /tmp/pause-bundle.tar.gz -C /
 # TODO: move to payload ?
 tar -xzvf /tmp/luks-config.tar.gz -C /
 
+# Use a custom /etc/agent-config.toml to enable image signature
+# verification.
+sed -i "s,/run/peerpod/agent-config.toml,/etc/agent-config.toml,g" \
+    /etc/systemd/system/kata-agent.service
+
 # fixes a failure of the podns@netns service
 semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
 
