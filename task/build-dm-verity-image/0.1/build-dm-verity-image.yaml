@@ -238,6 +238,7 @@ spec:
           --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
           --copy-in ${root_tar_file}:/tmp/ \
           --run /workspace/scripts/script-podvm-maker.sh \
+          --root-password password:1234 \
           -a $DISK
 
         # Resize the disk

@@ -110,6 +110,9 @@ rpm -e grub2-efi-x64 grub2-common grub2-tools grub2-tools-minimal grubby os-prob
 # lock shim to the installed version
 yum versionlock add shim-x64
 
+# console setup
+echo "console=tty0 console=ttyS0" > /etc/kernel/cmdline
+
 # Deprovision and prepare for Azure
 /usr/sbin/waagent -force -deprovision
 
