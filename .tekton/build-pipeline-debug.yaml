@@ -1,0 +1,149 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: build-pipeline-debug
+spec:
+  params:
+    - description: Source Repository URL
+      name: git-url
+      type: string
+    - default: ""
+      description: Revision of the Source Repository
+      name: revision
+      type: string
+    - description: Fully Qualified Output Image
+      name: output-image
+      type: string
+    - default: "false"
+      description: Force rebuild image
+      name: rebuild
+      type: string
+    - default: "false"
+      description: Skip checks against built image
+      name: skip-checks
+      type: string
+    - default: "true"
+      description: Skip optional checks, set false if you want to run optional checks
+      name: skip-optional
+      type: string
+    - default: ""
+      description:
+        Image tag expiration time, time values could be something like
+        1h, 2d, 3w for hours, days, and weeks, respectively.
+      name: image-expires-after
+    - name: build-platforms
+      description: List of platforms to build the disk images on. The available
+        set of values is determined by the configuration of the multi-platform-controller.
+      type: array
+      default:
+        - linux-root/amd64
+  results:
+    - description: ""
+      name: CHAINS-GIT_URL
+      value: $(tasks.clone-repository.results.url)
+    - description: ""
+      name: CHAINS-GIT_COMMIT
+      value: $(tasks.clone-repository.results.commit)
+    - description: ""
+      name: IMAGE_URL
+      value: $(tasks.build-image-index.results.IMAGE_URL)
+    - description: ""
+      name: IMAGE_DIGEST
+      value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+  tasks:
+    - name: init
+      params:
+        - name: image-url
+          value: $(params.output-image)
+        - name: rebuild
+          value: $(params.rebuild)
+        - name: skip-checks
+          value: $(params.skip-checks)
+        - name: skip-optional
+          value: $(params.skip-optional)
+        - name: pipelinerun-name
+          value: $(context.pipelineRun.name)
+        - name: pipelinerun-uid
+          value: $(context.pipelineRun.uid)
+      taskRef:
+        params:
+          - name: name
+            value: init
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-init:0.2@sha256:ded314206f09712b2116deb050b774ae7efef9ab243794334c8e616871a3ffa5
+          - name: kind
+            value: task
+        resolver: bundles
+    - name: clone-repository
+      taskRef:
+        resolver: bundles
+        params:
+          - name: name
+            value: git-clone-oci-ta
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:4a601aeec58a1dd89c271e728fd8f0d84777825b46940c3aec27f15bab3edacf
+          - name: kind
+            value: task
+      when:
+        - input: "$(tasks.init.results.build)"
+          operator: in
+          values:
+          - 'true'
+      runAfter:
+        - init
+      params:
+        - name: url
+          value: "$(params.git-url)"
+        - name: revision
+          value: "$(params.revision)"
+        - name: ociStorage
+          value: "$(params.output-image).git"
+        - name: ociArtifactExpiresAfter
+          value: "$(params.image-expires-after)"
+        - name: enableSymlinkCheck
+          value: false
+      workspaces:
+        - name: basic-auth
+          workspace: git-auth
+    - name: build-vm-image
+      timeout: "3h0m00s"
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.build-platforms)
+      params:
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+        - name: OUTPUT_IMAGE
+          value: $(params.output-image)
+      runAfter:
+        - clone-repository
+      taskRef:
+        name: build-dm-verity-image-debug
+      when:
+        - input: $(tasks.init.results.build)
+          operator: in
+          values:
+            - "true"
+    - name: build-image-index
+      timeout: "3h0m00s"
+      params:
+        - name: IMAGE
+          value: $(params.output-image)
+        - name: IMAGES
+          value: $(tasks.build-vm-image.results.IMAGE_REFERENCE[*])
+      runAfter:
+        - build-vm-image
+      taskRef:
+        params:
+          - name: name
+            value: build-image-manifest
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-build-image-manifest:0.1@sha256:caa6245a134fef2ee7cd9e28dda3011aac199ed8123f33f11c9057c5fe817abb
+          - name: kind
+            value: task
+        resolver: bundles
+  workspaces:
+    - name: git-auth
+      optional: true
