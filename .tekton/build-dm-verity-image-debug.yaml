@@ -7,7 +7,7 @@ metadata:
   labels:
     app.kubernetes.io/version: "0.1"
     build.appstudio.redhat.com/build_type: disk-image
-  name: build-dm-verity-image
+  name: build-dm-verity-image-debug
 spec:
   description: "Build disk images for sandboxed containers"
   params:
@@ -176,7 +176,7 @@ spec:
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
-        # debug varient is being created at this point
+        time sudo podman exec -t --latest virt-customize --root-password password:1234 -a $DISK # This is debug variant, setting root password
 
         # Apply dm-verity
         time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK
@@ -378,12 +378,12 @@ spec:
 
         dnf -y install buildah skopeo pigz jq
 
-        image_name="dm-verity-image"
+        image_name="dm-verity-image-debug"
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
         buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
         buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
-        buildah config --label description='PodVM with DM-Verity support' $buildah_container
+        buildah config --label description='Debug PodVM with DM-Verity support' $buildah_container
         buildah config --label distribution-scope=private $buildah_container
         buildah config --label io.k8s.description='PodVM image for confidential computing with device mapper verity support' $buildah_container
         buildah config --label name='openshift-sandboxed-containers/osc-dm-verity-image' $buildah_container
