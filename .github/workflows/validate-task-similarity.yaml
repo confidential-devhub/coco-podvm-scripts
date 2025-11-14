@@ -1,0 +1,48 @@
+name: Validate Debug Task Similarity
+
+on:
+  pull_request:
+    paths:
+      - 'task/build-dm-verity-image/0.1/build-dm-verity-image.yaml'
+      - '.tekton/build-dm-verity-image-debug.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'task/build-dm-verity-image/0.1/build-dm-verity-image.yaml'
+      - '.tekton/build-dm-verity-image-debug.yaml'
+
+jobs:
+  validate-similarity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate task files are almost identical
+        run: |
+          #!/bin/bash
+          set -e
+
+          MAIN_TASK="task/build-dm-verity-image/0.1/build-dm-verity-image.yaml"
+          DEBUG_TASK=".tekton/build-dm-verity-image-debug.yaml"
+
+          echo "Comparing $MAIN_TASK and $DEBUG_TASK"
+          echo "============================================"
+
+          # Get added lines and check if any don't contain "debug"
+          INVALID_LINES=$(diff "$MAIN_TASK" "$DEBUG_TASK" | grep '^> ' | grep -vi debug || true)
+          CHANGED_LINES=$(diff "$MAIN_TASK" "$DEBUG_TASK" | grep '^> ' | wc -l)
+
+          if [ -n "$INVALID_LINES" ]; then
+            echo "FAILURE: Found added lines that don't contain 'debug':"
+            echo "$INVALID_LINES"
+            exit 1
+          elif [ "$CHANGED_LINES" -gt 4 ]; then
+            echo "FAILURE: Found $CHANGED_LINES changed lines, maximum allowed is 4"
+            diff "$MAIN_TASK" "$DEBUG_TASK" | grep '^> ' || true
+            exit 1
+          fi
+
+          echo "SUCCESS: Minimal set of lines is different and seems valid"
+          exit 0
