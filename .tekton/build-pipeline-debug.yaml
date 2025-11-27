@@ -38,6 +38,10 @@ spec:
     default: docker
     type: string
     description: The format for the resulting image's mediaType. Valid values are oci or docker.
+  - default: 'false'
+    description: Add built image into an OCI image index
+    name: build-image-index
+    type: string
   results:
   - description: ""
     name: CHAINS-GIT_URL
@@ -128,12 +132,18 @@ spec:
       values:
       - "true"
   - name: build-image-index
-    timeout: "3h0m00s"
     params:
     - name: IMAGE
       value: $(params.output-image)
+    - name: COMMIT_SHA
+      value: $(tasks.clone-repository.results.commit)
+    - name: IMAGE_EXPIRES_AFTER
+      value: $(params.image-expires-after)
+    - name: ALWAYS_BUILD_INDEX
+      value: $(params.build-image-index)
     - name: IMAGES
-      value: $(tasks.build-vm-image.results.IMAGE_REFERENCE[*])
+      value:
+      - $(tasks.build-vm-image.results.IMAGE_REFERENCE[*])
     - name: BUILDAH_FORMAT
       value: $(params.buildah-format)
     runAfter:
@@ -141,9 +151,9 @@ spec:
     taskRef:
       params:
       - name: name
-        value: build-image-manifest
+        value: build-image-index
       - name: bundle
-        value: quay.io/konflux-ci/tekton-catalog/task-build-image-manifest:0.1@sha256:cb5183938ef98eeb0dcae39d1e24283aeda6348c52598a98938472ebf8be1bf6
+        value: quay.io/konflux-ci/tekton-catalog/task-build-image-index:0.1@sha256:d94cad7f41be61074dd21c7dff26dab9217c3435a16f62813c1cb8382dd9aae6
       - name: kind
         value: task
       resolver: bundles
