@@ -92,6 +92,8 @@ virt-customize --memsize 8192 \
     --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
     --run $ARTIFACTS_FOLDER/podvm_maker.sh \
     ${EXTRA_ARGS} \
+    --run-command "semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/bin/ip" \
     -a $INPUT_IMAGE
+    # the above semanage command fixes a failure of the podns@netns service, executed last as fs modifications may impact it
 
 [[ ${#SM_REGISTER[@]} -gt 0 ]] && virt-customize --memsize 8192 --sm-unregister -a $INPUT_IMAGE || true
