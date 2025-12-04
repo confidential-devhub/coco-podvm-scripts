@@ -32,7 +32,7 @@ function download_and_extract()
 {
     IMG=$1
     IMG_PATH=$2
-    podman pull $IMG
+    [[ -f /authfile ]] && podman pull --authfile /authfile $IMG || podman pull $IMG
     cid=$(podman create $IMG)
     podman cp "$cid":$IMG_PATH $DEST_PATH
 }
