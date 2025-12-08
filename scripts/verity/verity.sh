@@ -106,7 +106,7 @@ trap handle_ctrlc EXIT
 
 DISK_FORMAT=${DISK_FORMAT:-"raw"}
 APPLY_VERITY=${APPLY_VERITY:-"true"}
-CONSOLE_KERNEL=${CONSOLE_KERNEL:-"false"}
+CONSOLE_KERNEL=${CONSOLE_KERNEL:-"true"}
 ROOT_PARTITION_UUID=${ROOT_PARTITION_UUID:-"4f68bce3-e8cd-4db1-96e7-fbcaf984b709"}
 NBD_DEV=${NBD_DEV:-"0"}
 NBD_DEVICE=/dev/nbd${NBD_DEV}
@@ -225,15 +225,28 @@ function create_uki_addon()
     mount /dev/$EFI_PN mnt
     esp_mounted=1
     efi_files=($UKI_FOLDER/*.efi)
-    if [[ ${#efi_files[@]} -eq 1 && -f "${efi_files[0]}" ]]; then
-        UKI_NAME=${efi_files[0]}
-        echo "Found UKI $UKI_NAME"
-        mkdir -p "$UKI_NAME.extra.d"
-    else
-        echo "Error: Either no .efi file or multiple .efi files found."
-        echo "Cannot create the UKI addon."
+
+    # Check if any EFI files exist
+    if [[ ${#efi_files[@]} -eq 0 || ! -f "${efi_files[0]}" ]]; then
+        echo "Error: No .efi files found in $UKI_FOLDER"
         exit 1
     fi
+
+    # If multiple files, pick the most recent one
+    if [[ ${#efi_files[@]} -gt 1 ]]; then
+        echo "Found ${#efi_files[@]} EFI files: ${efi_files[@]}"
+        echo ""
+        echo "Current EFI fallback value (/boot/efi/EFI/redhat/BOOTX64.CSV):"
+        cat mnt/EFI/redhat/BOOTX64.CSV
+        echo ""
+        echo "Selecting the most recently modified UKI..."
+        UKI_NAME=$(ls -t "${efi_files[@]}" | head -1)
+    else
+        UKI_NAME=${efi_files[0]}
+    fi
+
+    echo "Using UKI: $UKI_NAME"
+    mkdir -p "$UKI_NAME.extra.d"
     cd $UKI_NAME.extra.d
     rm -f $ADDON_NAME
 

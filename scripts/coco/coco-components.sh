@@ -1,13 +1,14 @@
 #! /bin/bash
+set -eo pipefail
 
 INPUT_IMAGE=$1
 
 SCRIPT_FOLDER=${SCRIPT_FOLDER:-$(dirname $0)}
 SCRIPT_FOLDER=$(realpath $SCRIPT_FOLDER)
 
-PODVM_BINARY_DEF=quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload:osc-podvm-payload-on-push-rmvjh-build-image-index
+PODVM_BINARY_DEF=quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:776a00a7525e7aab504bf9d1dfc6b3e85d5111df57c759e3b4cd303e76a760e0
 PODVM_BINARY_LOCATION_DEF=/podvm-binaries.tar.gz
-PAUSE_BUNDLE_DEF=quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload:osc-podvm-payload-on-push-rmvjh-build-image-index
+PAUSE_BUNDLE_DEF=quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:776a00a7525e7aab504bf9d1dfc6b3e85d5111df57c759e3b4cd303e76a760e0
 PAUSE_BUNDLE_LOCATION_DEF=/pause-bundle.tar.gz
 
 function local_help()
@@ -79,11 +80,20 @@ ls $ARTIFACTS_FOLDER
 
 echo ""
 EXTRA_ARGS=""
+SM_REGISTER=""
 [[ -n "$ROOT_PASSWORD" ]] && EXTRA_ARGS=" --root-password password:${ROOT_PASSWORD} "
-virt-customize \
+[[ -n "$NVIDIA" ]] && EXTRA_ARGS+=" --run $ARTIFACTS_FOLDER/podvm_nvidia_maker.sh "
+[[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && SM_REGISTER=(--run-command "subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}") || SM_REGISTER=()
+
+virt-customize --memsize 8192 \
+    "${SM_REGISTER[@]}" \
     --copy-in $ARTIFACTS_FOLDER/podvm-binaries.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/pause-bundle.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
     --run $ARTIFACTS_FOLDER/podvm_maker.sh \
     ${EXTRA_ARGS} \
+    --run-command "semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/bin/ip" \
     -a $INPUT_IMAGE
+    # the above semanage command fixes a failure of the podns@netns service, executed last as fs modifications may impact it
+
+[[ ${#SM_REGISTER[@]} -gt 0 ]] && virt-customize --memsize 8192 --sm-unregister -a $INPUT_IMAGE || true
