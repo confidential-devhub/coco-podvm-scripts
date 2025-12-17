@@ -24,6 +24,10 @@ spec:
       type: string
       description: The checksum to use for downloading the RHEL image
       default: edce2dd6f8e1d1b2ff0b204f89b0659bc9e320d175beb7caad60712957a19608
+    - name: KERNEL_VERSION
+      type: string
+      description: The kernel version that the stock kernel included with the RHEL image will be updated to
+      default: 6.12.0-124.21.1.el10_1
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
@@ -42,6 +46,8 @@ spec:
         value: $(params.OUTPUT_IMAGE)
       - name: ACTIVATION_KEY
         value: $(params.ACTIVATION_KEY)
+      - name: KERNEL_VERSION
+        value: $(params.KERNEL_VERSION)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: SBOM_TYPE
@@ -174,6 +180,8 @@ spec:
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
+        time sudo podman exec -t --latest virt-customize --run /workspace/scripts/script-disk-mods.sh -a $DISK # disk modifications
+
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
         time sudo podman exec -t --latest virt-customize --root-password password:1234 -a $DISK # This is debug variant, setting root password
@@ -193,6 +201,16 @@ spec:
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
           /script-push.sh $DISK $MEASUREMENTS
+
+        REMOTESSHEOF
+
+        cat >>scripts/script-disk-mods.sh <<REMOTESSHEOF
+        #!/bin/bash
+        set -ex
+
+        dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
+        # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
+        printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
 
         REMOTESSHEOF
 
