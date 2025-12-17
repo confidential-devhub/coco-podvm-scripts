@@ -431,7 +431,7 @@ spec:
 
         # Finally, record all that in our results
         echo -n "$OUTPUT_IMAGE" | tee /tekton-results/IMAGE_URL
-        echo $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
+        echo -n $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
         # Saving also these two output in one unique variable. This task is using a matrix reference.
         # Unfortunately it seems that in Tekton, when using a matrix, each task run is executed in isolation,
         # and result values can't be dynamically constructed or reused across matrix combinations.
