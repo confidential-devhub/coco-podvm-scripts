@@ -168,6 +168,7 @@ spec:
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
           -v /lib/modules:/lib/modules:ro,Z \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           --user 0 \
           --security-opt=apparmor=unconfined \
           --security-opt=seccomp=unconfined \
@@ -180,7 +181,14 @@ spec:
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
 
-        time sudo podman exec -t --latest virt-customize --run /workspace/scripts/script-disk-mods.sh -a $DISK # disk modifications
+        # disk modifications in registered system
+        time sudo podman exec -t --latest virt-customize \
+          --copy-in /activation-key:/tmp/ \
+          --run-command "subscription-manager register --org \$(cat /tmp/activation-key/org) --activationkey \$(cat /tmp/activation-key/activationkey)" \
+          --run /workspace/scripts/script-disk-mods.sh \
+          --run-command "subscription-manager unregister" \
+          --run-command "rm -rf /tmp/activation-key" \
+          -a $DISK
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
