@@ -23,7 +23,7 @@ spec:
     - name: RHEL_IMAGE_CHECKSUM
       type: string
       description: The checksum to use for downloading the RHEL image
-      default: edce2dd6f8e1d1b2ff0b204f89b0659bc9e320d175beb7caad60712957a19608
+      default: 5925e05c32d8324a72e146a29293d60707571817769de73df63eab8dbd6d3196
     - name: KERNEL_VERSION
       type: string
       description: The kernel version we update the stock one comes with the mentioned ISO
