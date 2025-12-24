@@ -252,8 +252,8 @@ spec:
 
         dnf remove -y cloud-init WALinuxAgent
 
-        # fixes a failure of the podns@netns service
-        semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+        # fixes a failure of the podns@netns service, paths differ due to Selinux equivalency rules
+        semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 
         # this will allow /run/issue and /run/issue.d to take precedence
         mv /etc/issue.d /usr/lib/issue.d || true
