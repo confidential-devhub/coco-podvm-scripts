@@ -23,7 +23,11 @@ spec:
     - name: RHEL_IMAGE_CHECKSUM
       type: string
       description: The checksum to use for downloading the RHEL image
-      default: edce2dd6f8e1d1b2ff0b204f89b0659bc9e320d175beb7caad60712957a19608
+      default: 5925e05c32d8324a72e146a29293d60707571817769de73df63eab8dbd6d3196
+    - name: KERNEL_VERSION
+      type: string
+      description: The kernel version we update the stock one comes with the mentioned ISO
+      default: 6.12.0-124.21.1.el10_1
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
@@ -42,6 +46,8 @@ spec:
         value: $(params.OUTPUT_IMAGE)
       - name: ACTIVATION_KEY
         value: $(params.ACTIVATION_KEY)
+      - name: KERNEL_VERSION
+        value: $(params.KERNEL_VERSION)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: SBOM_TYPE
@@ -162,6 +168,7 @@ spec:
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
           -v /lib/modules:/lib/modules:ro,Z \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           --user 0 \
           --security-opt=apparmor=unconfined \
           --security-opt=seccomp=unconfined \
@@ -173,6 +180,15 @@ spec:
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
         time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
+
+        # disk modifications in registered system
+        time sudo podman exec -t --latest virt-customize \
+          --copy-in /activation-key:/tmp/ \
+          --run-command "subscription-manager register --org \$(cat /tmp/activation-key/org) --activationkey \$(cat /tmp/activation-key/activationkey)" \
+          --run /workspace/scripts/script-disk-mods.sh \
+          --run-command "subscription-manager unregister" \
+          --run-command "rm -rf /tmp/activation-key" \
+          -a $DISK
 
         time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
 
@@ -193,6 +209,16 @@ spec:
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
           /script-push.sh $DISK $MEASUREMENTS
+
+        REMOTESSHEOF
+
+        cat >>scripts/script-disk-mods.sh <<REMOTESSHEOF
+        #!/bin/bash
+        set -ex
+
+        dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
+        # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
+        printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
 
         REMOTESSHEOF
 
@@ -227,7 +253,7 @@ spec:
         dnf remove -y cloud-init WALinuxAgent
 
         # fixes a failure of the podns@netns service
-        semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+        semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 
         # this will allow /run/issue and /run/issue.d to take precedence
         mv /etc/issue.d /usr/lib/issue.d || true
@@ -321,15 +347,27 @@ spec:
         ADDON_NAME=verity.addon.efi
         mount /dev/$EFI_PN $temp_mount
         efi_files=($UKI_FOLDER/*.efi)
-        if [[ ${#efi_files[@]} -eq 1 && -f "${efi_files[0]}" ]]; then
-            UKI_NAME=${efi_files[0]}
-            echo "Found UKI $UKI_NAME"
-            mkdir -p "$UKI_NAME.extra.d"
-        else
-            echo "Error: Either no .efi file or multiple .efi files found."
-            echo "Cannot create the UKI addon."
+        # Check if any EFI files exist
+        if [[ ${#efi_files[@]} -eq 0 || ! -f "${efi_files[0]}" ]]; then
+            echo "Error: No .efi files found in $UKI_FOLDER"
             exit 1
         fi
+
+        # If multiple files, pick the most recent one
+        if [[ ${#efi_files[@]} -gt 1 ]]; then
+            echo "Found ${#efi_files[@]} EFI files: ${efi_files[@]}"
+            echo ""
+            echo "Current EFI fallback value (/boot/efi/EFI/redhat/BOOTX64.CSV):"
+            cat mnt/EFI/redhat/BOOTX64.CSV
+            echo ""
+            echo "Selecting the most recently modified UKI..."
+            UKI_NAME=$(ls -t "${efi_files[@]}" | head -1)
+        else
+            UKI_NAME=${efi_files[0]}
+        fi
+
+        echo "Using UKI: $UKI_NAME"
+        mkdir -p "$UKI_NAME.extra.d"
         cd $UKI_NAME.extra.d
         rm -f $ADDON_NAME
 
@@ -401,7 +439,7 @@ spec:
 
         # Finally, record all that in our results
         echo -n "$OUTPUT_IMAGE" | tee /tekton-results/IMAGE_URL
-        echo $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
+        echo -n $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
         # Saving also these two output in one unique variable. This task is using a matrix reference.
         # Unfortunately it seems that in Tekton, when using a matrix, each task run is executed in isolation,
         # and result values can't be dynamically constructed or reused across matrix combinations.

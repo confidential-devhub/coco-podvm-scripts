@@ -105,7 +105,7 @@ touch /etc/kernel/install.d/50-dracut.install
 printf "shimx64.efi,redhat,\\\EFI\\\Linux\\\\"`cat /etc/machine-id`"-"`rpm -q --queryformat %{VERSION}-%{RELEASE} kernel-uki-virt`".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
 
 # remove 'standard' grub
-rpm -e grub2-efi-x64 grub2-common grub2-tools grub2-tools-minimal grubby os-prober
+rpm -e grub2-efi-x64 grub2-common grub2-tools grub2-tools-minimal grubby os-prober grub2-tools-extra
 
 # lock shim to the installed version
 yum versionlock add shim-x64
