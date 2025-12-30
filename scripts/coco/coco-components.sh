@@ -85,6 +85,7 @@ SM_REGISTER=""
 
 virt-customize --memsize 8192 \
     "${SM_REGISTER[@]}" \
+    --run $ARTIFACTS_FOLDER/script-disk-mods.sh \
     --copy-in $ARTIFACTS_FOLDER/podvm-binaries.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/pause-bundle.tar.gz:/tmp/ \
     --copy-in $ARTIFACTS_FOLDER/luks-config.tar.gz:/tmp/ \
