@@ -1,6 +1,6 @@
 #! /bin/bash
 
-QCOW2=${1:-${QCOW2:-~/.local/share/libvirt/images/rhel10.0-created-ks.qcow2}}
+QCOW2=${1:-${QCOW2:-~/.local/share/libvirt/images/rhel10.1-created-ks.qcow2}}
 IMAGE_CERTIFICATE_PEM=$2
 IMAGE_PRIVATE_KEY=$3
 
