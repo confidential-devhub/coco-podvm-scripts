@@ -25,8 +25,8 @@ tar -xzvf /tmp/luks-config.tar.gz -C /
 
 dnf remove -y cloud-init WALinuxAgent
 
-# fixes a failure of the podns@netns service #TODO: still needed?
-semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+# fixes a failure of the podns@netns service, paths differ due to Selinux equivalency rules
+semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 
 systemctl enable /etc/systemd/system/luks-scratch.service
 
