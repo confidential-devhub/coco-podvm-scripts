@@ -1,6 +1,11 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+if subscription-manager identity &>/dev/null; then
+    dnf install -y afterburn e2fsprogs && dnf clean all
+else
+    dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+fi
+
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
@@ -19,8 +24,8 @@ tar -xzvf /tmp/luks-config.tar.gz -C /
 
 dnf remove -y cloud-init WALinuxAgent
 
-# fixes a failure of the podns@netns service #TODO: still needed?
-semanage fcontext -a -t bin_t /usr/sbin/ip && restorecon -v /usr/sbin/ip
+# fixes a failure of the podns@netns service
+semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 
 systemctl enable /etc/systemd/system/luks-scratch.service
 
