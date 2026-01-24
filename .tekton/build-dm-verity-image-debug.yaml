@@ -101,7 +101,7 @@ spec:
         curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
         echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
     - name: build
-      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:bfd26f371245bd229c7524670a13001eaf14ee1e8e887dbd948d35a2f781e41a
       computeResources:
         limits:
           memory: 512Mi
