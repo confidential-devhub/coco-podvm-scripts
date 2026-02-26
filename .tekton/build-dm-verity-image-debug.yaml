@@ -425,13 +425,13 @@ spec:
         buildah config --label distribution-scope=private $buildah_container
         buildah config --label io.k8s.description='PodVM image for confidential computing with device mapper verity support' $buildah_container
         buildah config --label name='openshift-sandboxed-containers/osc-dm-verity-image' $buildah_container
-        buildah config --label cpe='cpe:/a:redhat:confidential_compute_attestation:1.11::el9' $buildah_container
+        buildah config --label cpe='cpe:/a:redhat:confidential_compute_attestation:1.12::el9' $buildah_container
         buildah config --label release='1' $buildah_container
         buildah config --label url='https://github.com/confidential-devhub/coco-podvm-scripts' $buildah_container
         buildah config --label vcs-ref='main' $buildah_container
         buildah config --label vcs-type='git' $buildah_container
         buildah config --label vendor='Red Hat' $buildah_container
-        buildah config --label version='1.11' $buildah_container
+        buildah config --label version='1.12' $buildah_container
         buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
