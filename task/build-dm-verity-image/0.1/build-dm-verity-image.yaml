@@ -59,12 +59,12 @@ spec:
         name: varlibcontainers
   steps:
     - name: use-trusted-artifact
-      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:4689f88dd253bd1feebf57f1a76a5a751880f739000719cd662bbdc76990a7fd
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:15d7dc86012e41b10d1eb37679ec03ee75c96436224fadd0938a49dc537aa4ad
       args:
         - use
         - $(params.SOURCE_ARTIFACT)=/var/workdir/source
     - name: download-rhel-image
-      image: quay.io/konflux-ci/hermeto:0.29.0@sha256:f577e0399953471df7a9826c1550aef83d28e8b35f76dd65a193441822b629ee
+      image: quay.io/konflux-ci/hermeto:0.47.0@sha256:22a12fb6220c21c2b4e4b4ea33dfdc4a0294dc3071ebcf30570604b54078f792
       env:
         - name: REDHAT_OFFLINE_TOKEN
           valueFrom:
@@ -101,7 +101,7 @@ spec:
         curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
         echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
     - name: build
-      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709
       computeResources:
         limits:
           memory: 512Mi
@@ -572,7 +572,7 @@ spec:
         - mountPath: /activation-key
           name: activation-key
     - name: sbom-generate
-      image: quay.io/konflux-ci/mobster@sha256:45298b363ff4b96a084bf77a627b3e23471dcfb821eab55a3fa49a60f0ac43f3
+      image: quay.io/konflux-ci/mobster@sha256:a2feb71e321a0164820fe7171e564242c75125d8b62d213d3ba3423cf8fa678b
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -601,7 +601,7 @@ spec:
         mkdir -p /tmp/auth && select-oci-auth "$(cat "$(results.IMAGE_REFERENCE.path)")" > /tmp/auth/config.json
         DOCKER_CONFIG=/tmp/auth cosign attach sbom --sbom sbom.json --type "$SBOM_TYPE" "$(cat "$(results.IMAGE_REFERENCE.path)")"
     - name: report-sbom-url
-      image: quay.io/konflux-ci/yq:latest@sha256:15d0238843d954ee78c9c190705eb8b36f6e52c31434183c37d99a80841a635a
+      image: quay.io/konflux-ci/yq:latest@sha256:466005c667e6e9ea19fd4738275f71a13f89382f6233c581d5e952a41ccb3b42
       script: |
         #!/bin/bash
         REPO=${OUTPUT_IMAGE%:*}
