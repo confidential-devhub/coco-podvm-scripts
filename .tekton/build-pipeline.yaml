@@ -74,6 +74,10 @@ spec:
     description: Add built image into an OCI image index
     name: build-image-index
     type: string
+  - name: LABELS
+    type: string
+    description: A comma-separated list of key=value pairs to add as labels to the built image
+    default: ""
   results:
   - description: ""
     name: CHAINS-GIT_URL
@@ -171,6 +175,8 @@ spec:
       value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
     - name: OUTPUT_IMAGE
       value: $(params.output-image)
+    - name: LABELS
+      value: $(params.LABELS)
     runAfter:
     - prefetch-dependencies
     taskRef:
