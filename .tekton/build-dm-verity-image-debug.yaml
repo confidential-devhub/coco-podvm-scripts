@@ -32,6 +32,9 @@ spec:
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
       type: string
+    - name: LABELS
+      type: string
+      description: A comma-separated list of key=value pairs to add as labels to the built image
   results:
     - description: Digest of the manifest list just built
       name: IMAGE_DIGEST
@@ -52,6 +55,8 @@ spec:
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: SBOM_TYPE
         value: spdx
+      - name: LABELS
+        value: $(params.LABELS)
     volumeMounts:
       - mountPath: "/var/workdir"
         name: workdir
@@ -395,6 +400,7 @@ spec:
         set -ex
 
         export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+        export LABELS="$LABELS"
 
         REMOTESSHEOF
 
@@ -420,18 +426,13 @@ spec:
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
         buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
-        buildah config --label com.redhat.component='osc-dm-verity-image' $buildah_container
-        buildah config --label description='Debug PodVM with DM-Verity support' $buildah_container
-        buildah config --label distribution-scope=private $buildah_container
-        buildah config --label io.k8s.description='PodVM image for confidential computing with device mapper verity support' $buildah_container
-        buildah config --label name='openshift-sandboxed-containers/osc-dm-verity-image' $buildah_container
-        buildah config --label cpe='cpe:/a:redhat:confidential_compute_attestation:1.12::el9' $buildah_container
-        buildah config --label release='1' $buildah_container
-        buildah config --label url='https://github.com/confidential-devhub/coco-podvm-scripts' $buildah_container
-        buildah config --label vcs-ref='main' $buildah_container
-        buildah config --label vcs-type='git' $buildah_container
-        buildah config --label vendor='Red Hat' $buildah_container
-        buildah config --label version='1.12' $buildah_container
+        # Get the list of labels from the LABELS env variable and apply them to the image
+        IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
+        for label in "${LABEL_ARRAY[@]}"; do
+          # Remove leading and trailing whitespace from the label
+          label=$(echo "$label" | xargs)
+          buildah config --label "$label" $buildah_container
+        done
         buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
