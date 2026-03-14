@@ -571,7 +571,7 @@ spec:
         - mountPath: /activation-key
           name: activation-key
     - name: sbom-generate
-      image: quay.io/konflux-ci/mobster@sha256:a2feb71e321a0164820fe7171e564242c75125d8b62d213d3ba3423cf8fa678b
+      image: quay.io/konflux-ci/mobster@sha256:749069f94e77526f118f37b5da392e5d1597a315c894f4975f391edf8fb97727
       script: |
         #!/bin/bash
         set -euo pipefail
