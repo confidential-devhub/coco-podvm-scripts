@@ -2,7 +2,7 @@
 
 1. Download official RHEL ISO and build a CVM with `helpers/rhel10-dm-root.ks`:
 ```
-ISO_PATH=rhel-10.0-x86_64-dvd.iso
+ISO_PATH=rhel-10.1-x86_64-dvd.iso
 KS_LOCATION=helpers/rhel10-dm-root.ks
 QCOW2_NAME=my-image
 
@@ -11,36 +11,70 @@ virt-install --virt-type kvm --os-variant rhel10.0 --arch x86_64 --boot uefi --n
 
 Image will be stored in `~/.local/share/libvirt/images/$QCOW2_NAME.qcow2`
 
-2. Do custom modifications in the image
+2. Run the automation script from root directory:
 
-3. Optional: if not available, generate private key, PEM and DER certificates using `helpers/create-certs.sh`. This is only needed if secureboot has to be enabled.
 ```
-Usage: ./helpers/create-certs.sh <OUTPUT_FOLDER>
-Usage: ./helpers/create-certs.sh help
-
-The purpose of this script is to create a private key and public DER and PEM certs.
-The only input command is to specify where to store the key and certs.
-
-Options (define them as variable):
-SB_CERT_NAME:  optional  - name of the secureboot certificate added into the gallery. Default: My custom certificate
+export ACTIVATION_KEY=<your_activation_key>
+export ORG_ID=<your_org_id>
+export ROOT_PASSWORD=<your_root_password>
+./example_run.sh <Image_Path_From_Step1>
 ```
 
-4. Build the container (if `dnf install` fails, make sure podman has logged into your RHEL account)
+3. Convert the image to a container image:
+
 ```
-sudo podman build my-coco-podvm .
+cd helpers/build-container/
+podman build -t coco-podvm --build-arg PODVM_IMAGE_SRC=<qcow2-image_path> .
 ```
 
-5. Export the following mandatory variables
+Or use the build script:
 ```
-QCOW2=path/where/qcow2/is
-```
-And if certificates are being used:
-```
-IMAGE_CERTIFICATE_PEM=path/where/pem_cert/is
-IMAGE_PRIVATE_KEY=path/where/private_key/is
+cd helpers/build-container/
+./build.sh <qcow2-image_path>
 ```
 
-6. Optionally, define additional variables used by `scripts/create-verity-podvm.sh` running inside the container: (usage message available also with `create-verity-podvm.sh help`)
+4. Push to your registry:
+
+```
+podman tag localhost/coco-podvm:latest <your_repo_image_tag>
+podman push <your_repo_image_tag>
+```
+
+As a result, the input image will contain coco-components and be dm-verity protected.
+
+5. Optionally, upload yourself the image on Azure image gallery using `azure/upload-azure.sh`. In order to use that script, define the following variables (usage message available also by running `azure/upload-azure.sh help`):
+```
+Usage: azure/upload-azure.sh <INPUT_IMAGE> [<DER_CERTIFICATE>]
+Usage: azure/upload-azure.sh help
+
+The purpose of this script is to take a disk and:
+1. convert the disk into vhd
+2. if DER_CERTIFICATE is defined, create a deployment with a custom secureboot certificate
+3. upload the vhd to Azure
+4. create an Azure image gallery with that disk
+
+Upload options (define them as variable):
+AZURE_RESOURCE_GROUP:       mandatory - az resource group where to create the gallery
+AZURE_REGION:               optional  - az region where to create the gallery. Default: eastus
+IMAGE_GALLERY_NAME:         optional  - az gallery name. Default: my_gallery
+IMAGE_DEFINITION_NAME:      optional  - az image definition name. Default: podvm-image
+IMAGE_DEFINITION_PUBLISHER: optional  - az image definition publisher. Default: MyPublisher
+IMAGE_DEFINITION_OFFER:     optional  - az image definition offer. Default: My-PodVM
+IMAGE_DEFINITION_SKU:       optional  - az image definition sku. Default: My-PodVM
+IMAGE_VERSION:              optional  - az image version. Default: 1.0.0
+IMAGE_BLOB_NAME:            optional  - az image storage blob name. Default: dm-verity
+AZURE_SB_TEMPLATE:          optional  - az deployment template to automatically fill. Default: ./azure/azure-sb-template.json
+AZURE_DEPLOYMENT_NAME:      optional  - az deployment name. Default: my-deployment
+UPLOAD_SCRIPT_LOCATION:     optional  - location of the upload-azure.sh script. Default: ./azure/upload-azure.sh
+```
+The script will print as last line the full Azure Image ID.
+
+---
+
+## Additional Configuration Options
+
+The `scripts/create-verity-podvm.sh` script (used by `example_run.sh`) supports these optional environment variables:
+
 ```
 Usage: ./create-verity-podvm.sh <INPUT_IMAGE>
 Usage: ./create-verity-podvm.sh help
@@ -74,46 +108,15 @@ ROOT_PASSWORD:              optional   - set root's password. Default: disabled
 
 ```
 
-7. Run the container. To add the optional exported variables, just add `-e YOUR_VAR=$YOUR_VAR`.
-```
-sudo podman run --rm \
-    --privileged \
-    -v $QCOW2:/disk.qcow2 \
-    -v $IMAGE_CERTIFICATE_PEM:/public.pem \
-    -v $IMAGE_PRIVATE_KEY:/private.key \
-    -v /lib/modules:/lib/modules \
-    --user 0 \
-    --security-opt=apparmor=unconfined \
-    --security-opt=seccomp=unconfined \
-    --mount type=bind,source=/dev,target=/dev \
-    --mount type=bind,source=/run/udev,target=/run/udev \
-    coco-podvm
-```
-As a result, the input image will contain coco-components and be dm-verity protected.
+## Optional: Generate certificates for secureboot
 
-8. Optionally, upload yourself the image on Azure image gallery using `azure/upload-azure.sh`. In order to use that script, define the following variables (usage message available also by running `azure/upload-azure.sh help`):
+If not available, generate private key, PEM and DER certificates using `helpers/create-certs.sh`. This is only needed if secureboot has to be enabled.
 ```
-Usage: azure/upload-azure.sh <INPUT_IMAGE> [<DER_CERTIFICATE>]
-Usage: azure/upload-azure.sh help
+Usage: ./helpers/create-certs.sh <OUTPUT_FOLDER>
+Usage: ./helpers/create-certs.sh help
 
-The purpose of this script is to take a disk and:
-1. convert the disk into vhd
-2. if DER_CERTIFICATE is defined, create a deployment with a custom secureboot certificate
-3. upload the vhd to Azure
-4. create an Azure image gallery with that disk
+The purpose of this script is to create a private key and public DER and PEM certs.
+The only input command is to specify where to store the key and certs.
 
-Upload options (define them as variable):
-AZURE_RESOURCE_GROUP:       mandatory - az resource group where to create the gallery
-AZURE_REGION:               optional  - az region where to create the gallery. Default: eastus
-IMAGE_GALLERY_NAME:         optional  - az gallery name. Default: my_gallery
-IMAGE_DEFINITION_NAME:      optional  - az image definition name. Default: podvm-image
-IMAGE_DEFINITION_PUBLISHER: optional  - az image definition publisher. Default: MyPublisher
-IMAGE_DEFINITION_OFFER:     optional  - az image definition offer. Default: My-PodVM
-IMAGE_DEFINITION_SKU:       optional  - az image definition sku. Default: My-PodVM
-IMAGE_VERSION:              optional  - az image version. Default: 1.0.0
-IMAGE_BLOB_NAME:            optional  - az image storage blob name. Default: dm-verity
-AZURE_SB_TEMPLATE:          optional  - az deployment template to automatically fill. Default: ./azure/azure-sb-template.json
-AZURE_DEPLOYMENT_NAME:      optional  - az deployment name. Default: my-deployment
-UPLOAD_SCRIPT_LOCATION:     optional  - location of the upload-azure.sh script. Default: ./azure/upload-azure.sh
-```
-The script will print as last line the full Azure Image ID.
+Options (define them as variable):
+SB_CERT_NAME:  optional  - name of the secureboot certificate added into the gallery. Default: My custom certificate
