@@ -1,0 +1,14 @@
+[Unit]
+Description=Azure Bridge Setup Dispatcher
+After=kata-agent.service process-user-data.service
+Wants=kata-agent.service process-user-data.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/setup-azure-bridge.sh
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,2 +1,9 @@
 certs/
 builddir/
+rhel-10.0-x86_64-dvd.iso
+rhel-10.1-x86_64-dvd.iso
+helpers/build-container/dev-image-1.qcow2
+helpers/build-container/dev-image-3.qcow2
+helpers/build-container/dev-image-4.qcow2
+helpers/build-container/dev-image-6.qcow2
+helpers/build-container/dev-image.qcow2
