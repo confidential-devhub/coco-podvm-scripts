@@ -23,11 +23,11 @@ spec:
     - name: RHEL_IMAGE_CHECKSUM
       type: string
       description: The checksum to use for downloading the RHEL image
-      default: 5925e05c32d8324a72e146a29293d60707571817769de73df63eab8dbd6d3196
+      default: e15cb333529c332e76e4b1b946efe3515c99f996546675aec18e8effdf2540a5
     - name: KERNEL_VERSION
       type: string
       description: The kernel version that the stock kernel included with the RHEL image will be updated to
-      default: 6.12.0-124.21.1.el10_1
+      default: 6.12.0-211.16.1.el10_2
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
