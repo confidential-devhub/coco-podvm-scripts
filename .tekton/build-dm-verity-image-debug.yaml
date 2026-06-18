@@ -433,7 +433,24 @@ spec:
           label=$(echo "$label" | xargs)
           buildah config --label "$label" $buildah_container
         done
-        buildah commit $buildah_container $image_name
+
+        # Add PCR values as OCI manifest annotations
+        ANNOTATION_ARGS=()
+        if [ -f "$MEASUREMENTS_PATH" ]; then
+          # Extract hash algorithm and PCR values from measurements.json
+          alg=$(jq -r '.measurements | keys[0]' "$MEASUREMENTS_PATH")
+
+          # Add hash algorithm as separate annotation
+          ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.algorithm=${alg}")
+
+          # Add each PCR value as a separate annotation
+          for pcr in $(jq -r ".measurements.${alg} | keys[]" "$MEASUREMENTS_PATH"); do
+            pcr_value=$(jq -r ".measurements.${alg}.${pcr}" "$MEASUREMENTS_PATH")
+            ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.${pcr}=${pcr_value}")
+          done
+        fi
+
+        buildah commit "${ANNOTATION_ARGS[@]}" $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
         MANIFEST_DIGEST=$(cat image-digest)
