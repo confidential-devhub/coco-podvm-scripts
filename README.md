@@ -51,6 +51,36 @@ As a result, the input image will contain coco-components and be dm-verity prote
 ```
 Usage: azure/upload-azure.sh <INPUT_IMAGE> [<DER_CERTIFICATE>]
 Usage: azure/upload-azure.sh help
+Usage: azure/upload-azure.sh <INPUT_IMAGE> [<DER_CERTIFICATE>]
+Usage: azure/upload-azure.sh help
+
+The purpose of this script is to take a disk and:
+1. convert the disk into vhd
+2. if DER_CERTIFICATE is defined, create a deployment with a custom secureboot certificate
+3. upload the vhd to Azure
+4. create an Azure image gallery with that disk
+
+Upload options (define them as variable):
+AZURE_RESOURCE_GROUP:       mandatory - az resource group where to create the gallery
+AZURE_REGION:               optional  - az region where to create the gallery. Default: eastus
+IMAGE_GALLERY_NAME:         optional  - az gallery name. Default: my_gallery
+IMAGE_DEFINITION_NAME:      optional  - az image definition name. Default: podvm-image
+IMAGE_DEFINITION_PUBLISHER: optional  - az image definition publisher. Default: MyPublisher
+IMAGE_DEFINITION_OFFER:     optional  - az image definition offer. Default: My-PodVM
+IMAGE_DEFINITION_SKU:       optional  - az image definition sku. Default: My-PodVM
+IMAGE_VERSION:              optional  - az image version. Default: 1.0.0
+IMAGE_BLOB_NAME:            optional  - az image storage blob name. Default: dm-verity
+AZURE_SB_TEMPLATE:          optional  - az deployment template to automatically fill. Default: ./azure/azure-sb-template.json
+AZURE_DEPLOYMENT_NAME:      optional  - az deployment name. Default: my-deployment
+UPLOAD_SCRIPT_LOCATION:     optional  - location of the upload-azure.sh script. Default: ./azure/upload-azure.sh
+```
+The script will print as last line the full Azure Image ID.
+
+---
+
+## Additional Configuration Options
+
+The `scripts/create-verity-podvm.sh` script (used by `example_run.sh`) supports these optional environment variables:
 
 The purpose of this script is to take a disk and:
 1. convert the disk into vhd
@@ -116,7 +146,12 @@ ROOT_PASSWORD:              optional   - set root's password. Default: disabled
 ## Optional: Generate certificates for secureboot
 
 If not available, generate private key, PEM and DER certificates using `helpers/create-certs.sh`. This is only needed if secureboot has to be enabled.
+## Optional: Generate certificates for secureboot
+
+If not available, generate private key, PEM and DER certificates using `helpers/create-certs.sh`. This is only needed if secureboot has to be enabled.
 ```
+Usage: ./helpers/create-certs.sh <OUTPUT_FOLDER>
+Usage: ./helpers/create-certs.sh help
 Usage: ./helpers/create-certs.sh <OUTPUT_FOLDER>
 Usage: ./helpers/create-certs.sh help
 

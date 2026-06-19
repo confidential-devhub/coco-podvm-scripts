@@ -8,11 +8,11 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
-      == "main"
+      == "osc-release-v1.11"
   creationTimestamp: null
   labels:
-    appstudio.openshift.io/application: osc-dm-verity-image-debug
-    appstudio.openshift.io/component: osc-dm-verity-image-debug
+    appstudio.openshift.io/application: osc-dm-verity-image-debug-v1-11
+    appstudio.openshift.io/component: osc-dm-verity-image-debug-v1-11
     pipelines.appstudio.openshift.io/type: build
   name: osc-dm-verity-image-debug-on-push
   namespace: ose-osc-tenant
@@ -23,7 +23,7 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-dm-verity-image-debug:{{revision}}
+    value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-dm-verity-image-debug-v1-11:{{revision}}
   taskRunSpecs:
     - pipelineTaskName: build-vm-image
       stepSpecs:
@@ -36,7 +36,7 @@ spec:
   pipelineRef:
     name: build-pipeline-debug
   taskRunTemplate:
-    serviceAccountName: build-pipeline-osc-dm-verity-image-debug
+    serviceAccountName: build-pipeline-osc-dm-verity-image-debug-v1-11
   workspaces:
   - name: git-auth
     secret:
