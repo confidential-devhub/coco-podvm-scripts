@@ -1,0 +1,16 @@
+[Unit]
+Description=Azure Bridge Setup for Client Container with Hostname Resolution
+After=kata-agent.service network-online.target
+Wants=kata-agent.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/setup-azure-bridge-client.sh
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

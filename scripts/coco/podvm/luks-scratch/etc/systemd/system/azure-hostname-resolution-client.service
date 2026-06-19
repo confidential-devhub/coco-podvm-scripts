@@ -1,0 +1,17 @@
+[Unit]
+Description=Azure Client Container Hostname Resolution
+After=azure-bridge-client.service kata-agent.service
+Requires=azure-bridge-client.service
+ConditionPathExists=/run/peerpod/aa.toml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/setup-hostname-resolution-client.sh
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
