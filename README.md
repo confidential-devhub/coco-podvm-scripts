@@ -1,16 +1,20 @@
 # How to create a dm-verity image via container
 
 1. Download official RHEL ISO and build a CVM with `helpers/rhel10-dm-root.ks`:
+
+Change the QCOW2_Name everytime you rebuild it. 
+Install libvirt and place the downloaded rhel iso image in the given path of ISO_PATH.
+
 ```
 ISO_PATH=/var/lib/libvirt/images/rhel-10.1-x86_64-dvd.iso
 KS_LOCATION=helpers/rhel10-dm-root.ks
-QCOW2_NAME=trial-image-11
+QCOW2_NAME=trial-image-12
 
 virt-install --virt-type kvm --os-variant rhel10.0 --arch x86_64   --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=no   --name $QCOW2_NAME --memory 8192   --location $ISO_PATH   --disk bus=scsi,size=15   --initrd-inject=$KS_LOCATION   --nographics   --extra-args "console=ttyS0 inst.ks=file:/rhel10-dm-root.ks"   --transient --debug
 
 ```
 
-Image will be stored in `~/.local/share/libvirt/images/$QCOW2_NAME.qcow2`
+Image will be stored in `/var/lib/libvirt/images/$QCOW2_NAME.qcow2`
 
 
 2. Run the automation script from root directory:
@@ -21,13 +25,14 @@ export ORG_ID=<your_org_id>
 export ROOT_PASSWORD=1234
 ./example_run.sh <Image_Path_From_Step1>
 ```
-
+The above file path is :- `/var/lib/libvirt/images/$QCOW2_NAME.qcow2`
 
 3. Convert the image to a container image:
 
 ```
 cd helpers/build-container/
-podman build -t coco-podvm --build-arg PODVM_IMAGE_SRC=<qcow2-image_path> .
+cp /var/lib/libvirt/images/$QCOW2_NAME.qcow2 .
+podman build -t coco-podvm --build-arg PODVM_IMAGE_SRC=$QCOW2_NAME.qcow2 .
 ```
 
 Or use the build script:
@@ -45,6 +50,9 @@ podman push <your_repo_image_tag>
 ```
 
 As a result, the input image will contain coco-components and be dm-verity protected.
+
+After this we need to make changes to our main repo containing the ARO cluster details and the yaml files. Follow from STEP 5 of Debug_Image_Creation.md file in the other PeerPods repo.
+
 
 5. Optionally, upload yourself the image on Azure image gallery using `azure/upload-azure.sh`. In order to use that script, define the following variables (usage message available also by running `azure/upload-azure.sh help`):
 
