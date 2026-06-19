@@ -7,6 +7,7 @@ else
     dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
 fi
 
+
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
@@ -23,12 +24,24 @@ tar -xzvf /tmp/pause-bundle.tar.gz -C /
 # TODO: move to payload ?
 tar -xzvf /tmp/luks-config.tar.gz -C /
 
+# Make scripts executable
+chmod +x /usr/local/sbin/create-scratch.sh
+[ -f /usr/local/sbin/setup-azure-bridge.sh ] && chmod +x /usr/local/sbin/setup-azure-bridge.sh
+[ -f /usr/local/sbin/setup-azure-bridge-server.sh ] && chmod +x /usr/local/sbin/setup-azure-bridge-server.sh
+[ -f /usr/local/sbin/setup-azure-bridge-client.sh ] && chmod +x /usr/local/sbin/setup-azure-bridge-client.sh
+[ -f /usr/local/sbin/setup-hostname-resolution-client.sh ] && chmod +x /usr/local/sbin/setup-hostname-resolution-client.sh
+[ -f /usr/local/sbin/setup-hostname-resolution-server.sh ] && chmod +x /usr/local/sbin/setup-hostname-resolution-server.sh
+
 dnf remove -y cloud-init WALinuxAgent
 
 # fixes a failure of the podns@netns service, paths differ due to Selinux equivalency rules
 semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 
 systemctl enable /etc/systemd/system/luks-scratch.service
+systemctl enable kata-agent.service
+[ -f /etc/systemd/system/azure-bridge.service ] && systemctl enable azure-bridge.service
+
+
 
 # Configuration to make PCR values to be printed at boot
 cat <<EOF > /usr/libexec/gen-issue

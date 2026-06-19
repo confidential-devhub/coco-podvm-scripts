@@ -21,7 +21,7 @@ fi
 
 [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && sudo -E podman secret create activation_key --env ACTIVATION_KEY && sudo -E podman secret create org_id --env ORG_ID && \
     SM_SECRET_RUN_CMD="--secret activation_key,type=env,target=ACTIVATION_KEY --secret org_id,type=env,target=ORG_ID "
-sudo -E podman run --rm \
+sudo -E podman run --rm --network=host \
     --privileged \
     -v $QCOW2:/disk.qcow2 \
     $CERT_OPTIONS \
