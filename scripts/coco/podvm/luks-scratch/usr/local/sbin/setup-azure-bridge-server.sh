@@ -1,13 +1,42 @@
 #!/bin/bash
 set -e
 
+
+
+echo "Waiting for multi-NIC setup to complete..."
+
+# Wait for eth1 to exist in podns AND have a default route
+MAX_WAIT=30
+for i in $(seq 1 $MAX_WAIT); do
+    # Check if eth1 exists in podns
+    if ip netns exec podns ip link show eth1 &>/dev/null; then
+        # Check if eth1 has a default route
+        if ip netns exec podns ip route show default | grep -q "dev eth1"; then
+            echo "✓ eth1 found with default route (multi-NIC setup complete)"
+            sleep 2  # Extra safety margin
+            break
+        fi
+    fi
+    
+    if [ $i -eq $MAX_WAIT ]; then
+        echo "WARNING: Multi-NIC setup incomplete after ${MAX_WAIT}s"
+        echo "Current routes in podns:"
+        ip netns exec podns ip route show || true
+    fi
+    sleep 1
+done
+
+
+echo "Continuing with bridge setup"
+
+
 # Static bridge topology for direct VM-to-container communication
 # Server host bridge IP: 192.168.0.50
 # Server container bridge IP: 192.168.0.100
 # Remote client VM/container IPs are learned from aa.toml when present.
-SERVER_HOST_BRIDGE_IP="192.168.0.50"
-SERVER_CONTAINER_BRIDGE_IP="192.168.0.100"
-BRIDGE_SUBNET="192.168.0.0/24"
+SERVER_HOST_BRIDGE_IP="172.16.0.50"
+SERVER_CONTAINER_BRIDGE_IP="172.16.0.100"
+BRIDGE_SUBNET="172.16.0.0/24"
 
 
 AA_CONFIG_FILE="/run/peerpod/aa.toml"
@@ -139,15 +168,15 @@ if [ -z "$CONTAINER_IP" ]; then
 fi
 
 # Check if already configured
-if ip netns exec podns ip link show eth1 &>/dev/null; then
+if ip netns exec podns ip link show eth2 &>/dev/null; then
     echo "Bridge already configured, skipping setup"
     exit 0
 fi
 
 # Create veth pair in podns namespace
 echo "Creating veth pair..."
-ip netns exec podns ip link add eth1 type veth peer name veth-azure || true
-ip netns exec podns ip link set eth1 up
+ip netns exec podns ip link add eth2 type veth peer name veth-azure || true
+ip netns exec podns ip link set eth2 up
 ip netns exec podns ip link set veth-azure netns 1
 
 # Create bridge in host namespace
@@ -162,22 +191,48 @@ echo "Configuring static server bridge addresses..."
 ip addr flush dev br-azure 2>/dev/null || true
 ip addr add ${SERVER_HOST_BRIDGE_IP}/24 dev br-azure 2>/dev/null || true
 
-ip netns exec podns ip addr flush dev eth1 2>/dev/null || true
-ip netns exec podns ip addr add ${SERVER_CONTAINER_BRIDGE_IP}/24 dev eth1
+ip netns exec podns ip addr flush dev eth2 2>/dev/null || true
+ip netns exec podns ip addr add ${SERVER_CONTAINER_BRIDGE_IP}/24 dev eth2
 echo "Server container bridge IP: $SERVER_CONTAINER_BRIDGE_IP"
 echo "Server host bridge IP: $SERVER_HOST_BRIDGE_IP"
 
 # Configure routing
 echo "Configuring routes..."
-ip netns exec podns ip route add ${BRIDGE_SUBNET} dev eth1 2>/dev/null || true
+ip netns exec podns ip route add ${BRIDGE_SUBNET} dev eth2 2>/dev/null || true
 ip route add ${SERVER_CONTAINER_BRIDGE_IP}/32 dev br-azure 2>/dev/null || true
 ip route del ${BRIDGE_SUBNET} dev br-azure 2>/dev/null || true
+
+# Configure policy-based routing for bridge traffic replies
+echo "Configuring policy-based routing for bridge traffic..."
+# Traffic from bridge IP must use bridge interface for replies
+ip netns exec podns ip rule add from ${SERVER_CONTAINER_BRIDGE_IP} table 100 priority 100 2>/dev/null || true
+ip netns exec podns ip route add default via ${SERVER_HOST_BRIDGE_IP} dev eth2 table 100 2>/dev/null || true
+echo "✓ Bridge traffic from ${SERVER_CONTAINER_BRIDGE_IP} will reply via eth2"
 
 # Enable proxy ARP and forwarding
 echo "Enabling proxy ARP and forwarding..."
 sysctl -w net.ipv4.conf.all.proxy_arp=1
 sysctl -w net.ipv4.conf.br-azure.proxy_arp=1
 sysctl -w net.ipv4.ip_forward=1
+
+# Configure iptables for forwarding
+echo "Configuring server iptables forwarding rules..."
+if ! iptables -C FORWARD -i br-azure -o eth0 -j ACCEPT 2>/dev/null; then
+    iptables -I FORWARD -i br-azure -o eth0 -j ACCEPT
+fi
+
+if ! iptables -C FORWARD -i eth0 -o br-azure -j ACCEPT 2>/dev/null; then
+    iptables -I FORWARD -i eth0 -o br-azure -j ACCEPT
+fi
+
+# Allow forwarding from eth1 (secondary NIC) to bridge
+if ! iptables -C FORWARD -i br-azure -o eth1 -j ACCEPT 2>/dev/null; then
+    iptables -I FORWARD -i br-azure -o eth1 -j ACCEPT
+fi
+
+if ! iptables -C FORWARD -i eth1 -o br-azure -j ACCEPT 2>/dev/null; then
+    iptables -I FORWARD -i eth1 -o br-azure -j ACCEPT
+fi
 
 # Configure iptables DNAT rules for all ports
 echo "Configuring iptables for ports: ${PORTS[*]}"
@@ -218,77 +273,4 @@ echo "Server host bridge IP: $SERVER_HOST_BRIDGE_IP"
 echo "Container IP: $CONTAINER_IP"
 echo "Bridge subnet: $BRIDGE_SUBNET"
 echo "Exposed ports: ${PORTS[*]}"
-
-# Resolve hostname in container namespace (after bridge setup)
-# if [ -n "$HOSTNAME" ]; then
-#     echo "Resolving hostname in container namespace..."
-    
-#     # Log ps aux for debugging
-#     echo "=== Current processes (ps aux) ==="
-#     ps aux
-#     echo "=================================="
-    
-#     # Retry logic for hostname resolution (server resolves first, then client)
-#     HOSTNAME_IP=""
-#     MAX_RETRIES=10
-#     RETRY_DELAY=2
-    
-#     for attempt in $(seq 1 $MAX_RETRIES); do
-#         echo "Attempt $attempt/$MAX_RETRIES: Resolving hostname ${HOSTNAME}..."
-#         HOSTNAME_IP=$(curl -v "http://${HOSTNAME}" 2>&1 | grep -oP 'Trying \K[\d.]+' | head -n1)
-        
-#         if [ -n "$HOSTNAME_IP" ]; then
-#             echo "✓ Resolved ${HOSTNAME} to ${HOSTNAME_IP} on attempt $attempt"
-#             break
-#         else
-#             echo "Failed to resolve ${HOSTNAME}, retrying in ${RETRY_DELAY}s..."
-#             sleep $RETRY_DELAY
-#         fi
-#     done
-    
-#     if [ -n "$HOSTNAME_IP" ]; then
-#         echo "Successfully resolved ${HOSTNAME} to ${HOSTNAME_IP}"
-        
-#         # Find Java process in podns namespace
-#         echo "Looking for Java process in podns namespace..."
-        
-#         # Log processes in podns namespace
-#         echo "=== Processes in podns namespace ==="
-#         ip netns exec podns ps aux || echo "Failed to list podns processes"
-#         echo "===================================="
-        
-#         # Try to find Java process in podns namespace
-#         JAVA_PID=$(ip netns exec podns ps aux | grep -i 'java' | grep -v grep | head -n1 | awk '{print $2}')
-        
-#         # If Java not found, try sleep infinity
-#         if [ -z "$JAVA_PID" ]; then
-#             echo "Java process not found, trying 'sleep infinity'..."
-#             JAVA_PID=$(ip netns exec podns ps aux | grep 'sleep infinity' | grep -v grep | head -n1 | awk '{print $2}')
-#         fi
-        
-#         # If sleep not found, try pause
-#         if [ -z "$JAVA_PID" ]; then
-#             echo "Sleep process not found, trying 'pause'..."
-#             JAVA_PID=$(ip netns exec podns ps aux | grep '/pause' | grep -v grep | head -n1 | awk '{print $2}')
-#         fi
-        
-#         if [ -n "$JAVA_PID" ]; then
-#             echo "Found container process PID: ${JAVA_PID}"
-            
-#             # Check if hostname already exists in container's /etc/hosts
-#             if ! nsenter -t ${JAVA_PID} -a sh -c "grep -q '${HOSTNAME}' /etc/hosts" 2>/dev/null; then
-#                 # Add hostname to container's /etc/hosts
-#                 nsenter -t ${JAVA_PID} -a sh -c "echo '${HOSTNAME_IP} ${HOSTNAME}' >> /etc/hosts"
-#                 echo "✓ Added ${HOSTNAME} -> ${HOSTNAME_IP} to container's /etc/hosts"
-#             else
-#                 echo "Hostname already exists in container's /etc/hosts"
-#             fi
-#         else
-#             echo "Warning: Container process not found in podns namespace, skipping container /etc/hosts update"
-#         fi
-#     else
-#         echo "Warning: Could not resolve hostname ${HOSTNAME} after $MAX_RETRIES attempts"
-#     fi
-# fi
-
 

@@ -1,7 +1,8 @@
 [Unit]
 Description=Azure Bridge Setup for Server Container with Hostname Resolution
-After=kata-agent.service network-online.target
+After=kata-agent.service network-online.target agent-protocol-forwarder.service
 Wants=kata-agent.service network-online.target
+Requires=agent-protocol-forwarder.service network-online.target
 
 [Service]
 Type=oneshot

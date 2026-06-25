@@ -104,7 +104,7 @@ This guide documents the complete setup for enabling direct communication betwee
 
 ```
 Client Container (192.168.0.101)
-    ↓ eth1
+    ↓ eth2
 Client Bridge (192.168.0.51)
     ↓ eth0
 Client VM (192.168.0.10)
@@ -112,7 +112,7 @@ Client VM (192.168.0.10)
 Server VM (192.168.0.11)
     ↓ iptables DNAT
 Server Bridge (192.168.0.50)
-    ↓ eth1
+    ↓ eth2
 Server Container (10.129.2.25)
 ```
 
@@ -153,9 +153,9 @@ hostname -f
 
 ```bash
 # Create veth pair in podns namespace
-sudo ip netns exec podns ip link add eth1 type veth peer name veth-azure
-sudo ip netns exec podns ip addr add 192.168.0.100/24 dev eth1
-sudo ip netns exec podns ip link set eth1 up
+sudo ip netns exec podns ip link add eth2 type veth peer name veth-azure
+sudo ip netns exec podns ip addr add 192.168.0.100/24 dev eth2
+sudo ip netns exec podns ip link set eth2 up
 sudo ip netns exec podns ip link set veth-azure netns 1
 
 # Create bridge in host namespace
@@ -170,7 +170,7 @@ sudo ip addr add 192.168.0.50/24 dev br-azure
 
 ```bash
 # Add route in container namespace
-sudo ip netns exec podns ip route add 192.168.0.0/24 dev eth1
+sudo ip netns exec podns ip route add 192.168.0.0/24 dev eth2
 
 # Add specific host route
 sudo ip route add 192.168.0.100/32 dev br-azure
@@ -242,9 +242,9 @@ hostname -f
 
 ```bash
 # Create veth pair with different IP (192.168.0.101)
-sudo ip netns exec podns ip link add eth1 type veth peer name veth-azure
-sudo ip netns exec podns ip addr add 192.168.0.101/24 dev eth1
-sudo ip netns exec podns ip link set eth1 up
+sudo ip netns exec podns ip link add eth2 type veth peer name veth-azure
+sudo ip netns exec podns ip addr add 192.168.0.101/24 dev eth2
+sudo ip netns exec podns ip link set eth2 up
 sudo ip netns exec podns ip link set veth-azure netns 1
 
 # Create bridge
@@ -259,7 +259,7 @@ sudo ip addr add 192.168.0.51/24 dev br-azure
 
 ```bash
 # Add route in container namespace
-sudo ip netns exec podns ip route add 192.168.0.0/24 dev eth1
+sudo ip netns exec podns ip route add 192.168.0.0/24 dev eth2
 
 # Add specific host route
 sudo ip route add 192.168.0.101/32 dev br-azure
@@ -360,7 +360,7 @@ bridge link show
 ```bash
 # On both VMs
 ip addr show br-azure
-sudo ip netns exec podns ip addr show eth1
+sudo ip netns exec podns ip addr show eth2
 ```
 
 ### Check Routes
@@ -407,7 +407,7 @@ sysctl net.ipv4.ip_forward
 ### Issue: ARP resolution fails
 - Enable proxy ARP on all interfaces
 - Check ARP entries: `sudo ip netns exec podns ip neigh show`
-- Manually add ARP if needed: `sudo ip netns exec podns ip neigh add <IP> lladdr <MAC> dev eth1`
+- Manually add ARP if needed: `sudo ip netns exec podns ip neigh add <IP> lladdr <MAC> dev eth2`
 
 ### Issue: Route conflicts
 - Ensure no `192.168.0.0/24 dev br-azure` route exists
