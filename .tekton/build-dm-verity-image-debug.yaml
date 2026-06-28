@@ -231,6 +231,9 @@ spec:
         # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
         printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
 
+        echo "removing previous kernel pkgs:" \$(rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki")
+        rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki"  | xargs -r rpm -e --nodeps
+
         # TODO: check if this still needed when we switch to using NVIDIA attestation RPMs.
         dnf install -y xmlsec1 xmlsec1-openssl
 
