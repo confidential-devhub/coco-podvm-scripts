@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 
-export KERNEL_VERSION=6.12.0-124.21.1.el10_1
+export KERNEL_VERSION=6.12.0-211.16.1.el10_2
 
 dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
 # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
