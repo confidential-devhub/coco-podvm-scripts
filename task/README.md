@@ -31,7 +31,7 @@ At a high level, the task is doing the following:
    and verify checksum.
 2. Copy sources and required files to the remote SSH build host and run a script
    remotely to build the QCOW image.
-3. Generate a minimal SBOM for the published image.
+3. Generate an SBOM for the published image.
 
 Additional steps and code exist in the task to share context with the other tasks
 in our CI (running before or after it). We won't detail them in this document.
@@ -104,8 +104,11 @@ them to build our image.
 
 ### step "sbom-generate"
 
-This step is required for Konflux CI, but we are currently doing a very simple
-(empty) SBOM. We need to improve this.
+This step generates an SPDX 2.3 SBOM listing all RPM packages installed in the
+QCOW2 guest image and a reference to the `osc-podvm-payload` container (by
+digest). The RPM inventory is captured during the build via `rpm -qa` inside
+the guest, extracted with `virt-copy-out`, and transferred back to the Tekton
+pod via rsync.
 
 ## Build and publish the task
 

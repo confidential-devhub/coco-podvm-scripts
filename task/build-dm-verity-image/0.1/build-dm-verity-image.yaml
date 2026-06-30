@@ -175,6 +175,9 @@ spec:
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
 
+        # Extract payload container digest from Dockerfile for SBOM
+        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
+
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
@@ -220,6 +223,9 @@ spec:
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
           /script-push.sh $DISK $MEASUREMENTS
+
+        # Copy SBOM data to BUILD_DIR for transfer back to Tekton pod
+        cp output/rpm-manifest.txt output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
 
         REMOTESSHEOF
 
@@ -315,6 +321,9 @@ spec:
           --copy-in ${root_tar_file}:/tmp/ \
           --run /workspace/scripts/podvm-setup.sh \
           -a $DISK
+
+        # Extract RPM manifest from guest for SBOM generation
+        virt-copy-out -a $DISK /tmp/rpm-manifest.txt /output/
         REMOTESSHEOF
 
         cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
@@ -341,6 +350,9 @@ spec:
 
         # networking fix
         firewall-offline-cmd --zone=public --add-port=15150/tcp
+
+        # Capture installed RPM inventory for SBOM generation
+        rpm -qa --queryformat '%{NAME}|%{EPOCH}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SOURCERPM}\n' | sort > /tmp/rpm-manifest.txt
         REMOTESSHEOF
 
         cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
@@ -652,6 +664,10 @@ spec:
 
         ssh -v $SSH_ARGS "$SSH_HOST" $BUILD_DIR/scripts/script-build.sh
         rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/*" "/tekton/results/"
+
+        # Retrieve SBOM data from remote host
+        rsync "$SSH_HOST:$BUILD_DIR/rpm-manifest.txt" "/var/workdir/" 2>/dev/null || true
+        rsync "$SSH_HOST:$BUILD_DIR/payload-digest.txt" "/var/workdir/" 2>/dev/null || true
       volumeMounts:
         - mountPath: /ssh
           name: ssh
@@ -664,21 +680,140 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        OCI_COPY_FILE_PATH=empty-oci-copy.yaml
-
-        # This generates an empty SBOM. Fix this in the future to generate one with real contents
-        echo "artifacts: []" > $OCI_COPY_FILE_PATH
-
         IMAGE_URL=$(cat "$(results.IMAGE_URL.path)")
         IMAGE_DIGEST=$(cat "$(results.IMAGE_DIGEST.path)")
 
-        mobster generate \
-          --output /var/workdir/sbom.json \
-          oci-artifact \
-          --oci-copy-yaml "$OCI_COPY_FILE_PATH" \
-          --image-pullspec "$IMAGE_URL" \
-          --image-digest "$IMAGE_DIGEST" \
-          --sbom-type "$SBOM_TYPE"
+        RPM_MANIFEST="/var/workdir/rpm-manifest.txt"
+        PAYLOAD_DIGEST_FILE="/var/workdir/payload-digest.txt"
+        SBOM_FILE="/var/workdir/sbom.json"
+
+        IMAGE_PULLSPEC="${IMAGE_URL}@${IMAGE_DIGEST}"
+        CREATED=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "1970-01-01T00:00:00Z")
+
+        {
+          printf '{\n'
+          printf '  "spdxVersion": "SPDX-2.3",\n'
+          printf '  "dataLicense": "CC0-1.0",\n'
+          printf '  "SPDXID": "SPDXRef-DOCUMENT",\n'
+          printf '  "name": "%s",\n' "$IMAGE_PULLSPEC"
+          printf '  "documentNamespace": "https://konflux-ci.dev/spdxdocs/%s",\n' "$IMAGE_PULLSPEC"
+          printf '  "creationInfo": {\n'
+          printf '    "created": "%s",\n' "$CREATED"
+          printf '    "creators": ["Organization: Red Hat", "Tool: coco-podvm-scripts-sbom-generator"],\n'
+          printf '    "licenseListVersion": "3.25"\n'
+          printf '  },\n'
+
+          printf '  "packages": [\n'
+
+          printf '    {\n'
+          printf '      "SPDXID": "SPDXRef-image",\n'
+          printf '      "name": "osc-dm-verity-image",\n'
+          printf '      "versionInfo": "%s",\n' "$IMAGE_DIGEST"
+          printf '      "supplier": "Organization: Red Hat",\n'
+          printf '      "downloadLocation": "NOASSERTION",\n'
+          printf '      "licenseConcluded": "NOASSERTION",\n'
+          printf '      "filesAnalyzed": false,\n'
+          printf '      "checksums": [{"algorithm": "SHA256", "checksumValue": "%s"}],\n' "${IMAGE_DIGEST#sha256:}"
+          printf '      "externalRefs": [{\n'
+          printf '        "referenceCategory": "PACKAGE-MANAGER",\n'
+          printf '        "referenceType": "purl",\n'
+          printf '        "referenceLocator": "pkg:oci/osc-dm-verity-image@%s?repository_url=%s"\n' "$IMAGE_DIGEST" "$IMAGE_URL"
+          printf '      }]\n'
+          printf '    }'
+
+          RPM_COUNT=0
+          if [ -f "$RPM_MANIFEST" ]; then
+            while IFS='|' read -r NAME EPOCH VERSION RELEASE ARCH SOURCERPM; do
+              [ -z "$NAME" ] && continue
+              RPM_COUNT=$((RPM_COUNT + 1))
+              SAFE_NAME=$(echo "$NAME" | tr -c 'a-zA-Z0-9.-' '-')
+              PURL="pkg:rpm/redhat/${NAME}@${VERSION}-${RELEASE}?arch=${ARCH}&distro=rhel-10.0"
+              if [ "$EPOCH" != "(none)" ] && [ -n "$EPOCH" ]; then
+                PURL="${PURL}&epoch=${EPOCH}"
+              fi
+              if [ -n "$SOURCERPM" ] && [ "$SOURCERPM" != "(none)" ]; then
+                PURL="${PURL}&upstream=${SOURCERPM}"
+              fi
+              printf ',\n    {\n'
+              printf '      "SPDXID": "SPDXRef-rpm-%s-%d",\n' "$SAFE_NAME" "$RPM_COUNT"
+              printf '      "name": "%s",\n' "$NAME"
+              printf '      "versionInfo": "%s-%s",\n' "$VERSION" "$RELEASE"
+              printf '      "supplier": "Organization: Red Hat, Inc.",\n'
+              printf '      "originator": "Organization: Red Hat, Inc.",\n'
+              printf '      "downloadLocation": "NOASSERTION",\n'
+              printf '      "licenseConcluded": "NOASSERTION",\n'
+              printf '      "licenseDeclared": "NOASSERTION",\n'
+              printf '      "copyrightText": "NOASSERTION",\n'
+              printf '      "filesAnalyzed": false,\n'
+              printf '      "externalRefs": [{\n'
+              printf '        "referenceCategory": "PACKAGE-MANAGER",\n'
+              printf '        "referenceType": "purl",\n'
+              printf '        "referenceLocator": "%s"\n' "$PURL"
+              printf '      }]\n'
+              printf '    }'
+            done < "$RPM_MANIFEST"
+          fi
+
+          if [ -f "$PAYLOAD_DIGEST_FILE" ]; then
+            PAYLOAD_DIGEST=$(tr -d '[:space:]' < "$PAYLOAD_DIGEST_FILE")
+            if [ -n "$PAYLOAD_DIGEST" ]; then
+              printf ',\n    {\n'
+              printf '      "SPDXID": "SPDXRef-payload",\n'
+              printf '      "name": "osc-podvm-payload",\n'
+              printf '      "versionInfo": "%s",\n' "$PAYLOAD_DIGEST"
+              printf '      "supplier": "Organization: Red Hat",\n'
+              printf '      "downloadLocation": "NOASSERTION",\n'
+              printf '      "licenseConcluded": "NOASSERTION",\n'
+              printf '      "filesAnalyzed": false,\n'
+              printf '      "checksums": [{"algorithm": "SHA256", "checksumValue": "%s"}],\n' "${PAYLOAD_DIGEST#sha256:}"
+              printf '      "externalRefs": [{\n'
+              printf '        "referenceCategory": "PACKAGE-MANAGER",\n'
+              printf '        "referenceType": "purl",\n'
+              printf '        "referenceLocator": "pkg:oci/osc-podvm-payload@%s?repository_url=quay.io/redhat-user-workloads/ose-osc-tenant"\n' "$PAYLOAD_DIGEST"
+              printf '      }]\n'
+              printf '    }'
+            fi
+          fi
+
+          printf '\n  ],\n'
+
+          printf '  "relationships": [\n'
+          printf '    {\n'
+          printf '      "spdxElementId": "SPDXRef-DOCUMENT",\n'
+          printf '      "relatedSpdxElement": "SPDXRef-image",\n'
+          printf '      "relationshipType": "DESCRIBES"\n'
+          printf '    }'
+
+          RPM_COUNT=0
+          if [ -f "$RPM_MANIFEST" ]; then
+            while IFS='|' read -r NAME EPOCH VERSION RELEASE ARCH SOURCERPM; do
+              [ -z "$NAME" ] && continue
+              RPM_COUNT=$((RPM_COUNT + 1))
+              SAFE_NAME=$(echo "$NAME" | tr -c 'a-zA-Z0-9.-' '-')
+              printf ',\n    {\n'
+              printf '      "spdxElementId": "SPDXRef-image",\n'
+              printf '      "relatedSpdxElement": "SPDXRef-rpm-%s-%d",\n' "$SAFE_NAME" "$RPM_COUNT"
+              printf '      "relationshipType": "CONTAINS"\n'
+              printf '    }'
+            done < "$RPM_MANIFEST"
+          fi
+
+          if [ -f "$PAYLOAD_DIGEST_FILE" ]; then
+            PAYLOAD_DIGEST=$(tr -d '[:space:]' < "$PAYLOAD_DIGEST_FILE")
+            if [ -n "$PAYLOAD_DIGEST" ]; then
+              printf ',\n    {\n'
+              printf '      "spdxElementId": "SPDXRef-image",\n'
+              printf '      "relatedSpdxElement": "SPDXRef-payload",\n'
+              printf '      "relationshipType": "CONTAINS"\n'
+              printf '    }'
+            fi
+          fi
+
+          printf '\n  ]\n'
+          printf '}\n'
+        } > "$SBOM_FILE"
+
+        echo "Generated SBOM with $RPM_COUNT RPM packages at $SBOM_FILE"
 
     - name: upload-sbom
       image: quay.io/konflux-ci/appstudio-utils:1610c1fc4cfc9c9053dbefc1146904a4df6659ef@sha256:90ac97b811073cb99a23232c15a08082b586c702b85da6200cf54ef505e3c50c
