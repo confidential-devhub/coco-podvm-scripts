@@ -31,7 +31,7 @@ At a high level, the task is doing the following:
    and verify checksum.
 2. Copy sources and required files to the remote SSH build host and run a script
    remotely to build the QCOW image.
-3. Generate a minimal SBOM for the published image.
+3. Generate an SBOM for the published image.
 
 Additional steps and code exist in the task to share context with the other tasks
 in our CI (running before or after it). We won't detail them in this document.
@@ -102,10 +102,12 @@ them to build our image.
   Uses Buildah to package the QCOW2 file into a container image and pushes it to
   the registry.
 
-### step "sbom-generate"
+### steps "sbom-syft-generate" and "sbom-generate"
 
-This step is required for Konflux CI, but we are currently doing a very simple
-(empty) SBOM. We need to improve this.
+These steps generate an SPDX 2.3 SBOM for the published image. First, syft scans
+the RPM database extracted from the QCOW2 guest image to produce an SBOM listing
+all installed RPM packages. Then, mobster wraps the syft output with the OCI image
+metadata and a reference to the `osc-podvm-payload` container (by digest).
 
 ## Build and publish the task
 
