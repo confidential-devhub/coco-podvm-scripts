@@ -1,0 +1,15 @@
+[Unit]
+Description=Write VM IP to Container Filesystem
+After=kata-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/write-vm-ip-to-container.sh
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,7 @@ chmod +x /usr/local/sbin/create-scratch.sh
 [ -f /usr/local/sbin/setup-azure-bridge-client.sh ] && chmod +x /usr/local/sbin/setup-azure-bridge-client.sh
 [ -f /usr/local/sbin/setup-hostname-resolution-client.sh ] && chmod +x /usr/local/sbin/setup-hostname-resolution-client.sh
 [ -f /usr/local/sbin/setup-hostname-resolution-server.sh ] && chmod +x /usr/local/sbin/setup-hostname-resolution-server.sh
+# [ -f /usr/local/sbin/write-vm-ip-to-container.sh ] && chmod +x /usr/local/sbin/write-vm-ip-to-container.sh
 
 dnf remove -y cloud-init WALinuxAgent
 
@@ -40,6 +41,7 @@ semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
 systemctl enable /etc/systemd/system/luks-scratch.service
 systemctl enable kata-agent.service
 [ -f /etc/systemd/system/azure-bridge.service ] && systemctl enable azure-bridge.service
+# [ -f /etc/systemd/system/write-vm-ip-to-container.service ] && systemctl enable write-vm-ip-to-container.service
 
 
 
