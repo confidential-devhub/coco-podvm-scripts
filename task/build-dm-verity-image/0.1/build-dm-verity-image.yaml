@@ -175,6 +175,9 @@ spec:
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
 
+        # Extract osc-podvm-payload digest from Dockerfile for SBOM
+        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
+
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
@@ -220,6 +223,10 @@ spec:
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
           /script-push.sh $DISK $MEASUREMENTS
+
+        # Copy SBOM data to BUILD_DIR for transfer back to Tekton pod
+        cp -r output/rootfs $BUILD_DIR/ 2>/dev/null || true
+        cp output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
 
         REMOTESSHEOF
 
@@ -315,6 +322,13 @@ spec:
           --copy-in ${root_tar_file}:/tmp/ \
           --run /workspace/scripts/podvm-setup.sh \
           -a $DISK
+
+        # Extract RPM database and os-release from guest for SBOM generation
+        # RHEL 9 stores the RPM DB at /usr/lib/sysimage/rpm/
+        # /etc/os-release is a symlink; the real file is /usr/lib/os-release
+        mkdir -p /output/rootfs/usr/lib/sysimage /output/rootfs/etc
+        virt-copy-out -a $DISK /usr/lib/sysimage/rpm /output/rootfs/usr/lib/sysimage/
+        virt-copy-out -a $DISK /usr/lib/os-release /output/rootfs/etc/
         REMOTESSHEOF
 
         cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
@@ -652,33 +666,56 @@ spec:
 
         ssh -v $SSH_ARGS "$SSH_HOST" $BUILD_DIR/scripts/script-build.sh
         rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/*" "/tekton/results/"
+
+        # Retrieve SBOM data from remote host
+        rsync -ra "$SSH_HOST:$BUILD_DIR/rootfs/" "/var/workdir/rootfs/" 2>/dev/null || true
+        rsync "$SSH_HOST:$BUILD_DIR/payload-digest.txt" "/var/workdir/" 2>/dev/null || true
       volumeMounts:
         - mountPath: /ssh
           name: ssh
           readOnly: true
         - mountPath: /activation-key
           name: activation-key
+    - name: sbom-syft-generate
+      image: ghcr.io/anchore/syft:latest@sha256:484dc49cd5869780d8a8e1b2fa2d9381cc1388fc32caeb69e8be81e3ae08bbb1
+      command:
+        - /syft
+      args:
+        - scan
+        - dir:/var/workdir/rootfs
+        - -o
+        - spdx-json=/var/workdir/syft-sbom.json
+      volumeMounts:
+        - mountPath: /var/workdir
+          name: workdir
     - name: sbom-generate
-      image: quay.io/konflux-ci/mobster@sha256:45298b363ff4b96a084bf77a627b3e23471dcfb821eab55a3fa49a60f0ac43f3
+      image: quay.io/konflux-ci/mobster@sha256:1374bc35c71781987cce00ef5efe2be42923f83def19b60a570e947189b90d15
       script: |
         #!/bin/bash
         set -euo pipefail
 
-        OCI_COPY_FILE_PATH=empty-oci-copy.yaml
-
-        # This generates an empty SBOM. Fix this in the future to generate one with real contents
-        echo "artifacts: []" > $OCI_COPY_FILE_PATH
-
         IMAGE_URL=$(cat "$(results.IMAGE_URL.path)")
         IMAGE_DIGEST=$(cat "$(results.IMAGE_DIGEST.path)")
 
-        mobster generate \
-          --output /var/workdir/sbom.json \
-          oci-artifact \
-          --oci-copy-yaml "$OCI_COPY_FILE_PATH" \
-          --image-pullspec "$IMAGE_URL" \
-          --image-digest "$IMAGE_DIGEST" \
-          --sbom-type "$SBOM_TYPE"
+        SYFT_SBOM="/var/workdir/syft-sbom.json"
+        SBOM_FILE="/var/workdir/sbom.json"
+        PAYLOAD_DIGEST_FILE="/var/workdir/payload-digest.txt"
+
+        MOBSTER_ARGS=(
+          generate --output "$SBOM_FILE" oci-image
+          --from-syft "$SYFT_SBOM"
+          --image-pullspec "$IMAGE_URL"
+          --image-digest "$IMAGE_DIGEST"
+        )
+
+        if [ -f "$PAYLOAD_DIGEST_FILE" ]; then
+          PAYLOAD_DIGEST=$(tr -d '[:space:]' < "$PAYLOAD_DIGEST_FILE")
+          if [ -n "$PAYLOAD_DIGEST" ]; then
+            MOBSTER_ARGS+=(--additional-base-image "quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload:latest@${PAYLOAD_DIGEST}")
+          fi
+        fi
+
+        mobster "${MOBSTER_ARGS[@]}"
 
     - name: upload-sbom
       image: quay.io/konflux-ci/appstudio-utils:1610c1fc4cfc9c9053dbefc1146904a4df6659ef@sha256:90ac97b811073cb99a23232c15a08082b586c702b85da6200cf54ef505e3c50c
