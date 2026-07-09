@@ -37,7 +37,7 @@ spec:
         distribution-scope=private,
         io.k8s.description=PodVM image for confidential computing with device mapper verity support,
         name=openshift-sandboxed-containers/osc-dm-verity-image,
-        cpe=cpe:/a:redhat:confidential_compute_attestation:1.12::el9,
+        cpe=cpe:/a:redhat:confidential_compute_attestation:1.130::el9,
         release=1,
         url=https://github.com/confidential-devhub/coco-podvm-scripts,
         vcs-ref=main,
