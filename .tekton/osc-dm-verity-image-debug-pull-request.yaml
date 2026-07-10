@@ -42,6 +42,10 @@ spec:
         vcs-type=git,
         vendor=Red Hat,
         version=1.12
+    - name: additional-tags
+      value:
+        - pr-{{pull_request_number}}
+        - pullreq-{{pull_request_number}}-{{revision}}
   taskRunSpecs:
     - pipelineTaskName: build-vm-image
       stepSpecs:

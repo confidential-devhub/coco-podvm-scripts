@@ -42,6 +42,10 @@ spec:
     type: string
     description: A comma-separated list of key=value pairs to add as labels to the built image
     default: ""
+  - name: additional-tags
+    type: array
+    default: []
+    description: Additional tags to apply to the built image (e.g. pr-<number> for PR builds)
   results:
   - description: ""
     name: CHAINS-GIT_URL
@@ -136,6 +140,26 @@ spec:
         value: build-image-index
       - name: bundle
         value: quay.io/konflux-ci/tekton-catalog/task-build-image-index:0.3@sha256:0b4251ea0fab38be2b1441bea2788220d4cf2963ffb854a0ed90992fbabbe122
+      - name: kind
+        value: task
+      resolver: bundles
+  - name: apply-tags
+    params:
+    - name: IMAGE_URL
+      value: $(tasks.build-image-index.results.IMAGE_URL)
+    - name: IMAGE_DIGEST
+      value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+    - name: ADDITIONAL_TAGS
+      value:
+      - $(params.additional-tags[*])
+    runAfter:
+    - build-image-index
+    taskRef:
+      params:
+      - name: name
+        value: apply-tags
+      - name: bundle
+        value: quay.io/konflux-ci/tekton-catalog/task-apply-tags:0.3@sha256:a291081de7fb27f832c6fc3c4b078acf7e6162ca4c085db38b118ca87e8b5b66
       - name: kind
         value: task
       resolver: bundles
