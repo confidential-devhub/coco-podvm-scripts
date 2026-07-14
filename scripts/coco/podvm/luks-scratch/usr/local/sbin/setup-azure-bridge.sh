@@ -7,18 +7,26 @@ echo "Azure bridge role dispatcher starting"
 KATA_DIR="/run/kata-containers"
 CONFIG_JSON=""
 
-# Find the first directory whose name is a 64-char hex string
-for dir in "$KATA_DIR"/*/; do
-    dirname=$(basename "$dir")
-    if [[ "$dirname" =~ ^[0-9a-f]{64}$ ]]; then
-        CONFIG_JSON="${dir}config.json"
-        echo "Using kata config: $CONFIG_JSON"
-        break
-    fi
+# Wait up to 30s for a config.json that contains the bridge.role annotation.
+# Multiple sandbox dirs may exist; only one belongs to the peer-pod container.
+MAX_WAIT=30
+echo "Waiting for kata sandbox config.json with bridge.role annotation (max ${MAX_WAIT}s)..."
+for i in $(seq 1 $MAX_WAIT); do
+    for dir in "$KATA_DIR"/*/; do
+        dirname=$(basename "$dir")
+        if [[ "$dirname" =~ ^[0-9a-f]{64}$ ]] && [ -f "${dir}config.json" ]; then
+            if grep -q '"bridge\.role"' "${dir}config.json" 2>/dev/null; then
+                CONFIG_JSON="${dir}config.json"
+                echo "Using kata config: $CONFIG_JSON (found after ${i}s)"
+                break 2
+            fi
+        fi
+    done
+    sleep 1
 done
 
-if [ -z "$CONFIG_JSON" ] || [ ! -f "$CONFIG_JSON" ]; then
-    echo "No kata config.json found under $KATA_DIR, skipping azure bridge setup"
+if [ -z "$CONFIG_JSON" ]; then
+    echo "No kata config.json with bridge.role found under $KATA_DIR after ${MAX_WAIT}s, skipping azure bridge setup"
     exit 0
 fi
 
@@ -32,6 +40,9 @@ if [ -z "$ROLE" ]; then
 fi
 
 echo "Detected network role from annotations bridge.role: $ROLE"
+
+# Export so child scripts use the same config.json and don't re-scan
+export KATA_CONFIG_JSON="$CONFIG_JSON"
 
 case "$ROLE" in
     server)
@@ -49,4 +60,3 @@ case "$ROLE" in
         exit 1
         ;;
 esac
-# Made with Bob

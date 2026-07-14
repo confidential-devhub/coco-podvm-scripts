@@ -8,7 +8,7 @@ Install libvirt and place the downloaded rhel iso image in the given path of ISO
 ```
 ISO_PATH=/var/lib/libvirt/images/rhel-10.1-x86_64-dvd.iso
 KS_LOCATION=helpers/rhel10-dm-root.ks
-QCOW2_NAME=tpcds-image-1
+QCOW2_NAME=image-6
 
 virt-install --virt-type kvm --os-variant rhel10.0 --arch x86_64   --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=no   --name $QCOW2_NAME --memory 8192   --location $ISO_PATH   --disk bus=scsi,size=15   --initrd-inject=$KS_LOCATION   --nographics   --extra-args "console=ttyS0 inst.ks=file:/rhel10-dm-root.ks"   --transient --debug
 

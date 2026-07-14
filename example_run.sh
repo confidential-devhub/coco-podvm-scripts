@@ -9,7 +9,7 @@ IMAGE_PRIVATE_KEY=$3
 
 [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && echo "Subscription credentials have been found" && SM_SECRET_BUILD_CMD=" --secret=id=activation_key,env=ACTIVATION_KEY --secret=id=org_id,env=ORG_ID "
 
-sudo -E podman build -t coco-podvm \
+sudo -E podman build -t coco-podvm --network=host \
     ${SM_SECRET_BUILD_CMD} \
     -f Dockerfile . || printf "\n\n!!! Faild to build coco-podvm, will used cached image if it exists !!!\n"
 
@@ -21,7 +21,7 @@ fi
 
 [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && sudo -E podman secret create activation_key --env ACTIVATION_KEY && sudo -E podman secret create org_id --env ORG_ID && \
     SM_SECRET_RUN_CMD="--secret activation_key,type=env,target=ACTIVATION_KEY --secret org_id,type=env,target=ORG_ID "
-sudo -E podman run --rm --network=host \
+sudo -E podman run --rm --network=host\
     --privileged \
     -v $QCOW2:/disk.qcow2 \
     $CERT_OPTIONS \
