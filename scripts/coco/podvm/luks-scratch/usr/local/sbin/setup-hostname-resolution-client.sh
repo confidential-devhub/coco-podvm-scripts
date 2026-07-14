@@ -130,10 +130,13 @@ else
             continue
         fi
         if ! grep -q 'SPARK_WORKER_HOST' "${SPARK_ENV_FILE}" 2>/dev/null; then
-            printf 'export SPARK_WORKER_HOST=%s\n' "${VM_IP}" >> "${SPARK_ENV_FILE}"
+            printf '\nexport SPARK_WORKER_HOST=%s\n' "${VM_IP}" >> "${SPARK_ENV_FILE}"
             echo "✓ Set SPARK_WORKER_HOST=${VM_IP} in ${SPARK_ENV_FILE}"
         else
             echo "SPARK_WORKER_HOST already set in ${SPARK_ENV_FILE}"
         fi
     done
 fi
+
+nsenter -t ${CONTAINER_PID} -a sh -c "touch /tmp/start"
+echo "✓ Written /tmp/start in container (PID ${CONTAINER_PID})"
