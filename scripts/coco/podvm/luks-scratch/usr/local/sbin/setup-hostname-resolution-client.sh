@@ -49,7 +49,7 @@ done
 echo "Waiting for kata-agent to spawn container processes..."
 KATA_AGENT_PID=""
 CONTAINER_PID=""
-MAX_WAIT=200  # Wait up to 2 minutes
+MAX_WAIT=600  # Wait up to 2 minutes
 
 for attempt in $(seq 1 $MAX_WAIT); do
     # Find kata-agent process
@@ -104,6 +104,7 @@ fi
 echo "Successfully resolved ${HOSTNAME} to ${HOSTNAME_IP}"
 echo "Using container process PID: ${CONTAINER_PID}"
 
+
 # Update /etc/hosts in container
 if [ -n "$CONTAINER_PID" ]; then
     if ! nsenter -t ${CONTAINER_PID} -a sh -c "grep -q '${HOSTNAME}' /etc/hosts" 2>/dev/null; then
@@ -116,12 +117,23 @@ fi
 
 echo "Client hostname resolution completed successfully"
 
-# Write VM IP to spark env inside the container filesystem (create if not exists)
-if ! nsenter -t ${CONTAINER_PID} -a sh -c "grep -q 'SPARK_WORKER_HOST' /opt/ibm/spark/conf/spark-env.sh" 2>/dev/null; then
-    nsenter -t ${CONTAINER_PID} -a sh -c "printf '\nexport SPARK_WORKER_HOST=${VM_IP}\n' >> /opt/ibm/spark/conf/spark-env.sh"
-    echo "✓ Set SPARK_WORKER_HOST=${VM_IP} in container's spark-env.sh"
+
+SPARK_ENV_DIRS=$(ls -d /run/kata-containers/shared/containers/*-conf/ 2>/dev/null)
+
+if [ -z "$SPARK_ENV_DIRS" ]; then
+    echo "Warning: could not locate any *-conf/ dir under /run/kata-containers/shared/containers/"
 else
-    echo "SPARK_WORKER_HOST already set in spark-env.sh"
+    for SPARK_ENV_DIR in $SPARK_ENV_DIRS; do
+        SPARK_ENV_FILE="${SPARK_ENV_DIR%/}/spark-env.sh"
+        if [ ! -f "$SPARK_ENV_FILE" ]; then
+            echo "Skipping ${SPARK_ENV_DIR} — no spark-env.sh found"
+            continue
+        fi
+        if ! grep -q 'SPARK_WORKER_HOST' "${SPARK_ENV_FILE}" 2>/dev/null; then
+            printf 'export SPARK_WORKER_HOST=%s\n' "${VM_IP}" >> "${SPARK_ENV_FILE}"
+            echo "✓ Set SPARK_WORKER_HOST=${VM_IP} in ${SPARK_ENV_FILE}"
+        else
+            echo "SPARK_WORKER_HOST already set in ${SPARK_ENV_FILE}"
+        fi
+    done
 fi
-nsenter -t ${CONTAINER_PID} -a sh -c "touch /tmp/start"
-echo "✓ Written /tmp/start in container (PID ${CONTAINER_PID})"

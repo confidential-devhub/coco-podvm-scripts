@@ -46,7 +46,7 @@ done
 echo "Waiting for kata-agent to spawn container processes..."
 KATA_AGENT_PID=""
 CONTAINER_PID=""
-MAX_WAIT=200  # Wait up to 2 minutes
+MAX_WAIT=600  # Wait up to 2 minutes
 
 for attempt in $(seq 1 $MAX_WAIT); do
     # Find kata-agent process
