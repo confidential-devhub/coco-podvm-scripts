@@ -129,11 +129,11 @@ else
             echo "Skipping ${SPARK_ENV_DIR} — no spark-env.sh found"
             continue
         fi
-        if ! grep -q 'SPARK_WORKER_HOST' "${SPARK_ENV_FILE}" 2>/dev/null; then
-            printf '\nexport SPARK_WORKER_HOST=%s\n' "${VM_IP}" >> "${SPARK_ENV_FILE}"
-            echo "✓ Set SPARK_WORKER_HOST=${VM_IP} in ${SPARK_ENV_FILE}"
+        if ! grep -q 'SPARK_LOCAL_HOSTNAME' "${SPARK_ENV_FILE}" 2>/dev/null; then
+            printf '\nexport SPARK_LOCAL_HOSTNAME=%s\n' "${VM_IP}" >> "${SPARK_ENV_FILE}"
+            echo "✓ Set SPARK_LOCAL_HOSTNAME=${VM_IP} in ${SPARK_ENV_FILE}"
         else
-            echo "SPARK_WORKER_HOST already set in ${SPARK_ENV_FILE}"
+            echo "SPARK_LOCAL_HOSTNAME already set in ${SPARK_ENV_FILE}"
         fi
     done
 fi
