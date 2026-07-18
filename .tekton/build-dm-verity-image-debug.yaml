@@ -677,7 +677,7 @@ spec:
         - mountPath: /activation-key
           name: activation-key
     - name: sbom-syft-generate
-      image: ghcr.io/anchore/syft:latest@sha256:484dc49cd5869780d8a8e1b2fa2d9381cc1388fc32caeb69e8be81e3ae08bbb1
+      image: ghcr.io/anchore/syft:latest@sha256:a64166d91c83c2881b6c449c834c2e7259efee55eab863d8708ddf31e9a0ed37
       command:
         - /syft
       args:
