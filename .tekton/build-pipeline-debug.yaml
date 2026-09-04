@@ -41,7 +41,19 @@ spec:
   - name: LABELS
     type: string
     description: A comma-separated list of key=value pairs to add as labels to the built image
-    default: ""
+    default: >
+      com.redhat.component=osc-dm-verity-image,
+      description=Debug PodVM with DM-Verity support,
+      distribution-scope=private,
+      io.k8s.description=PodVM image for confidential computing with device mapper verity support,
+      name=openshift-sandboxed-containers/osc-dm-verity-image,
+      cpe=cpe:/a:redhat:confidential_compute_attestation:1.130::el9,
+      release=1,
+      url=https://github.com/confidential-devhub/coco-podvm-scripts,
+      vcs-ref=main,
+      vcs-type=git,
+      vendor=Red Hat,
+      version=1.14
   - name: additional-tags
     type: array
     default: []
