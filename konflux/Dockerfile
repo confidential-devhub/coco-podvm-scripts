@@ -1,6 +1,6 @@
 FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload-v1-13@sha256:2e68f5f4ce8bec34b111df7f02510987c3dfc3d0c728534337ffdf79d10df0db as payload
 
-FROM registry.redhat.io/ubi9/ubi-init:9.8-1781514776
+FROM registry.redhat.io/ubi9/ubi-init:9.8-1790753812
 
 RUN subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
 
