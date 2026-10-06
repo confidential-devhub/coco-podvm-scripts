@@ -73,7 +73,6 @@ uki-direct
 python3-dnf-plugin-versionlock
 
 # CoCo
-afterburn
 e2fsprogs
 kernel-modules-extra
 

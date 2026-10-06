@@ -2,20 +2,10 @@
 
 # See SM_REGISTER in scripts/coco/coco-components.sh for subscription-manager setup
 if subscription-manager identity &>/dev/null; then
-    dnf install -y afterburn e2fsprogs && dnf clean all
+    dnf install -y e2fsprogs && dnf clean all
 else
-    dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+    dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
 fi
-
-cat <<EOF > /etc/systemd/system/afterburn-checkin.service
-[Unit]
-ConditionKernelCommandLine=
-
-[Service]
-ExecStart=
-ExecStart=-/usr/bin/afterburn --provider=azure --check-in
-EOF
-ln -s ../afterburn-checkin.service /etc/systemd/system/multi-user.target.wants/afterburn-checkin.service
 
 tar -xzvf /tmp/podvm-binaries.tar.gz -C /
 tar -xzvf /tmp/pause-bundle.tar.gz -C /
