@@ -349,7 +349,6 @@ spec:
         rm -f /etc/issue.net
         rm -f /etc/issue
 
-        systemctl enable afterburn-checkin.service
         systemctl enable luks-scratch.service
         systemctl enable gen-issue.service
 
