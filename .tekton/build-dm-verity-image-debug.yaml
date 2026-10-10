@@ -75,7 +75,7 @@ spec:
         - use
         - $(params.SOURCE_ARTIFACT)=/var/workdir/source
     - name: download-rhel-image
-      image: quay.io/konflux-ci/hermeto:0.29.0@sha256:f577e0399953471df7a9826c1550aef83d28e8b35f76dd65a193441822b629ee
+      image: quay.io/konflux-ci/hermeto:0.52.0@sha256:2d19f2b2e0535e62e1d9ff21723a8d6902ed82652cba5b0fa05f7db9c147dee8
       env:
         - name: REDHAT_OFFLINE_TOKEN
           valueFrom:
