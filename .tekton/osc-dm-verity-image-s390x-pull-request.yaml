@@ -28,6 +28,9 @@ spec:
     value: 5d
   - name: dockerfile
     value: Dockerfile
+  - name: build-platforms
+    value:
+    - linux-root/amd64   # x86_64 host — cross-builds s390x via qemu-system-s390x emulation
   - name: additional-tags
     value:
       - pr-{{pull_request_number}}

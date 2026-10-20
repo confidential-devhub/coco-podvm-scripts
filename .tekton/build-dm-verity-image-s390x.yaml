@@ -111,6 +111,108 @@ spec:
         filepath="/var/workdir/rhel.iso"
         curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
         echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
+    - name: setup-cross-arch
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: 250m
+          memory: 128Mi
+      script: |-
+        #!/bin/bash
+        set -euo pipefail
+
+        mkdir -p ~/.ssh
+        if [ -e "/ssh/error" ]; then
+          cat /ssh/error
+          exit 1
+        elif [ -e "/ssh/otp" ]; then
+          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
+        else
+          cp /ssh/id_rsa ~/.ssh
+        fi
+        chmod 0400 ~/.ssh/id_rsa
+        export SSH_HOST=$(cat /ssh/host)
+        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60"
+
+        ssh $SSH_ARGS "$SSH_HOST" bash -s << 'NODESETUP'
+          set -ex
+
+          # ── 1. qemu-system-s390x ─────────────────────────────────────────────
+          # Required by virt-install --arch s390x (Stage 1 base image build).
+          # On Fedora the RPM exists; on RHEL 9 it must be built from source
+          # (no package available). Pull the static binary from a Fedora container
+          # so this step works on both distros without a source compile.
+          if ! command -v qemu-system-s390x &>/dev/null; then
+            sudo podman run --rm -v /usr/local/bin:/out:Z \
+              registry.fedoraproject.org/fedora:40 \
+              bash -c 'dnf install -y qemu-system-s390x >/dev/null 2>&1 && \
+                       cp /usr/bin/qemu-system-s390x /out/'
+            sudo chmod 755 /usr/local/bin/qemu-system-s390x
+            sudo ln -sf /usr/local/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
+            qemu-system-s390x --version
+          else
+            echo "qemu-system-s390x already present: $(qemu-system-s390x --version | head -1)"
+          fi
+
+          # ── 2. qemu-s390x-static ─────────────────────────────────────────────
+          # Required by coco-components-s390x.sh (Stage 2): NBD mount + chroot +
+          # binfmt_misc so s390x ELF binaries (dnf, dracut, zipl) execute
+          # transparently on the x86_64 host. Must be at /usr/local/bin/.
+          if [[ ! -x /usr/local/bin/qemu-s390x-static ]]; then
+            sudo podman run --rm -v /usr/local/bin:/out:Z \
+              registry.fedoraproject.org/fedora:40 \
+              bash -c 'dnf install -y qemu-user-static-s390x >/dev/null 2>&1 && \
+                       cp /usr/bin/qemu-s390x-static /out/'
+            sudo chmod 755 /usr/local/bin/qemu-s390x-static
+            file /usr/local/bin/qemu-s390x-static | grep -q "statically linked" || \
+              { echo "ERROR: qemu-s390x-static is not statically linked"; exit 1; }
+          else
+            echo "qemu-s390x-static already present."
+          fi
+
+          # ── 3. Kernel modules ─────────────────────────────────────────────────
+          # nbd: used by verity-s390x.sh and coco-components-s390x.sh to mount
+          #      the qcow2 disk image without a running VM.
+          # binfmt_misc: filesystem required to register the qemu-s390x handler.
+          sudo modprobe nbd max_part=16 || true
+          sudo modprobe binfmt_misc     || true
+          [[ -b /dev/nbd0 ]] || { echo "ERROR: /dev/nbd0 not available after modprobe nbd"; exit 1; }
+
+          # ── 4. Restart libvirtd ───────────────────────────────────────────────
+          # libvirtd must re-probe emulators after qemu-system-s390x is installed
+          # so that virt-install can find the s390-ccw-virtio machine type.
+          sudo systemctl restart libvirtd
+          sudo virsh domcapabilities \
+            --emulatorbin /usr/local/bin/qemu-system-s390x \
+            --arch s390x --machine s390-ccw-virtio --virttype qemu \
+            | grep -q 's390x' || { echo "ERROR: libvirtd cannot see qemu-system-s390x"; exit 1; }
+
+          # ── 5. binfmt_misc registration ───────────────────────────────────────
+          # coco-components-s390x.sh registers/removes this itself per-run, but
+          # pre-registering here ensures it is present before the build step starts.
+          if [[ ! -f /proc/sys/fs/binfmt_misc/qemu-s390x ]]; then
+            echo ':qemu-s390x:M::\x7fELF\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x16:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff:/usr/local/bin/qemu-s390x-static:' \
+              | sudo tee /proc/sys/fs/binfmt_misc/register
+            echo "Registered binfmt_misc for s390x ELF."
+          else
+            echo "binfmt_misc for s390x already registered."
+          fi
+
+          echo "=== Cross-arch s390x node setup complete ==="
+          for c in qemu-system-s390x qemu-img qemu-nbd virt-install virt-customize \
+                   veritysetup systemd-repart partprobe e2fsck losetup podman jq; do
+            command -v "$c" >/dev/null && echo "OK   $c" || echo "MISS $c"
+          done
+          [[ -x /usr/local/bin/qemu-s390x-static ]] && echo "OK   qemu-s390x-static" || echo "MISS qemu-s390x-static"
+          [[ -b /dev/nbd0 ]] && echo "OK   /dev/nbd0" || echo "MISS /dev/nbd0"
+        NODESETUP
+      volumeMounts:
+        - mountPath: /ssh
+          name: ssh
+          readOnly: true
     - name: build
       image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
       computeResources:
@@ -193,26 +295,37 @@ spec:
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
-        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
+        # s390x: cross-arch virt-install using qemu-system-s390x emulation.
+        # Uses the s390x kickstart (no --boot uefi, console=ttysclp0).
+        time sudo podman exec -t --latest virt-install \
+          --virt-type qemu \
+          --cpu host-model \
+          --os-variant rhel10.0 \
+          --arch s390x \
+          --name disk \
+          --memory 8192 \
+          --location /workspace/rhel.iso \
+          --disk path=$DISK,format=qcow2,bus=scsi,size=7 \
+          --initrd-inject=/workspace/source/helpers/rhel10-s390x-dm-root.ks \
+          --nographics \
+          --extra-args 'console=ttysclp0 inst.ks=file:/rhel10-s390x-dm-root.ks' \
+          --transient
 
-        # disk modifications in registered system
-        time sudo podman exec -t --latest virt-customize \
-          --copy-in /activation-key:/tmp/ \
-          --run-command "subscription-manager register --org \$(cat /tmp/activation-key/org) --activationkey \$(cat /tmp/activation-key/activationkey)" \
-          --run /workspace/scripts/script-disk-mods.sh \
-          --run-command "subscription-manager unregister" \
-          --run-command "rm -rf /tmp/activation-key" \
-          -a $DISK
+        # Stage 2: install CoCo components into the s390x disk image.
+        # coco-components-s390x.sh auto-detects x86_64 host and uses NBD mount +
+        # chroot + qemu-s390x-static (binfmt_misc) instead of virt-customize.
+        ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm \
+          /workspace/source/scripts/coco/coco-components-s390x.sh $DISK
 
-        time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
+        # Stage 3: apply dm-verity using the s390x pipeline.
+        # create-verity-podvm-s390x.sh auto-sets LIBGUESTFS_HV=qemu-system-s390x
+        # when running on a non-s390x host.
+        /workspace/source/scripts/verity/verity-s390x.sh $DISK
 
-        # debug varient is being created at this point
-
-        # Apply dm-verity
-        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK
-
-        # Measure disk
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh $DISK $MEASUREMENTS
+        # Stage 4: PCR measurement.
+        # OVMF (x86_64 EFI) is not applicable for s390x; write an empty
+        # measurements file so the push step continues without modification.
+        echo '{"measurements":{}}' > $MEASUREMENTS
 
         # Push image
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
@@ -230,130 +343,17 @@ spec:
 
         REMOTESSHEOF
 
-        cat >>scripts/script-disk-mods.sh <<REMOTESSHEOF
+        # NOTE: script-disk-mods, script-podvm-maker, podvm-setup, and script-verity
+        # heredocs are intentionally removed for s390x. The build steps above
+        # delegate directly to the s390x scripts already present in the source tree:
+        #   - scripts/coco/coco-components-s390x.sh  (stages disk-mods + podvm-maker)
+        #   - scripts/verity/verity-s390x.sh          (dm-verity)
+        # No inline x86_64 logic is needed here.
+
+        cat >>scripts/script-verity-stub.sh <<'REMOTESSHEOF'
         #!/bin/bash
-        set -ex
-
-        dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
-        # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
-        printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
-
-        echo "removing previous kernel pkgs:" \$(rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki")
-        rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki"  | xargs -r rpm -e --nodeps
-
-        # TODO: check if this still needed when we switch to using NVIDIA attestation RPMs.
-        dnf install -y xmlsec1 xmlsec1-openssl
-
-        ##### NVIDIA DRIVERS
-        if [ -n "${NVIDIA_DRIVER_VERSION}" ]; then
-          subscription-manager repos --enable=rhel-10-for-x86_64-supplementary-rpms
-          subscription-manager repos --enable=rhel-10-for-x86_64-extensions-rpms
-          dnf install -y --setopt=install_weak_deps=False nvidia-driver-${NVIDIA_DRIVER_VERSION} \
-              nvidia-driver-cuda-${NVIDIA_DRIVER_VERSION} \
-              nvidia-driver-libs-${NVIDIA_DRIVER_VERSION} \
-              nvidia-persistenced-${NVIDIA_DRIVER_VERSION} \
-              kmod-nvidia-open-${NVIDIA_DRIVER_VERSION}-${KERNEL_VERSION%.el*} \
-              nvidia-container-toolkit
-          dnf clean all
-
-          echo -e "blacklist nouveau\nblacklist nova_core" > /etc/modprobe.d/blacklist_nv_alt.conf
-          sed -i 's/^#no-cgroups = false/no-cgroups = true/' /etc/nvidia-container-runtime/config.toml
-
-          cat << 'EOF' > /usr/local/bin/generate-nvidia-cdi.sh
-        #!/bin/bash
-
-        # Check if NVIDIA GPU is present
-        if ! lspci | grep -i nvidia > /dev/null 2>&1; then
-            echo "No NVIDIA GPU detected, skipping NVIDIA setup" | tee /var/log/nvidia-cdi-gen.log
-            exit 0
-        fi
-
-        # Load drivers
-        nvidia-ctk -d system create-device-nodes --control-devices --load-kernel-modules
-
-        nvidia-persistenced
-
-        # Set confidential compute to ready state (non-fatal if unsupported)
-        if nvidia-smi conf-compute -srs 1 2>/dev/null; then
-            echo "Confidential Compute enabled" | tee -a /var/log/nvidia-cdi-gen.log
-        else
-            echo "Could not set Confidential Compute GPUs to Ready State" | tee -a /var/log/nvidia-cdi-gen.log
-        fi
-
-        # Generate NVIDIA CDI configuration
-        nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml >> /var/log/nvidia-cdi-gen.log 2>&1 || exit 1
-        EOF
-          chmod 755 /usr/local/bin/generate-nvidia-cdi.sh
-
-          cat <<'EOF' > /etc/systemd/system/nvidia-cdi.service
-        [Unit]
-        Description=Generate NVIDIA CDI Configuration
-        Before=kata-agent.service
-
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/local/bin/generate-nvidia-cdi.sh
-        RemainAfterExit=true
-
-        [Install]
-        WantedBy=multi-user.target
-        EOF
-          chmod 644 /etc/systemd/system/nvidia-cdi.service
-          ln -s /etc/systemd/system/nvidia-cdi.service /etc/systemd/system/multi-user.target.wants/nvidia-cdi.service
-        fi
-
-        REMOTESSHEOF
-
-        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        DISK=/output/qcow2/disk.qcow2
-
-        root_tar_dir=/workspace/source/konflux/podvm-root
-        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
-        pushd ${root_tar_dir}
-        tar -czvf ${root_tar_file} *
-        popd
-
-        virt-customize \
-          --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
-          --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
-          --copy-in ${root_tar_file}:/tmp/ \
-          --run /workspace/scripts/podvm-setup.sh \
-          -a $DISK
-
-        # Extract RPM database and os-release from guest for SBOM generation
-        # RHEL 9 stores the RPM DB at /usr/lib/sysimage/rpm/
-        # /etc/os-release is a symlink; the real file is /usr/lib/os-release
-        mkdir -p /output/rootfs/usr/lib/sysimage /output/rootfs/etc
-        virt-copy-out -a $DISK /usr/lib/sysimage/rpm /output/rootfs/usr/lib/sysimage/
-        virt-copy-out -a $DISK /usr/lib/os-release /output/rootfs/etc/
-        REMOTESSHEOF
-
-        cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        tar -xzvf /tmp/podvm-binaries.tar.gz -C /
-        tar -xzvf /tmp/pause-bundle.tar.gz -C /
-        tar -xzvf /tmp/podvm-root.tar.gz -C /
-
-        dnf remove -y cloud-init WALinuxAgent
-
-        # fixes a failure of the podns@netns service, paths differ due to Selinux equivalency rules
-        semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
-
-        # this will allow /run/issue and /run/issue.d to take precedence
-        mv /etc/issue.d /usr/lib/issue.d || true
-        rm -f /etc/issue.net
-        rm -f /etc/issue
-
-        systemctl enable luks-scratch.service
-        systemctl enable gen-issue.service
-
-        # networking fix
-        firewall-offline-cmd --zone=public --add-port=15150/tcp
+        # stub: s390x verity is applied by verity-s390x.sh called directly in script-build.sh
+        echo "verity-stub: nothing to do for s390x"
         REMOTESSHEOF
 
         cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
@@ -554,108 +554,19 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        # This script measures TPM PCR values from a VM disk image
-        # Arguments:
-        #   $1: DISK - Path to the qcow2 disk image to boot and measure
-        #   $2: OUTPUT_FILE - Path where to write the measurements JSON file
-
-        # Accept disk path and output file as arguments
-        if [ -z "$1" ] || [ -z "$2" ]; then
-          echo "Error: Disk path and output file not provided"
+        # PCR measurement via OVMF (x86_64 EFI firmware) is not applicable for
+        # s390x. Write an empty measurements file so the push step can proceed
+        # without changes. A proper s390x vTPM measurement flow is tracked
+        # separately.
+        if [ -z "$2" ]; then
+          echo "Error: output file not provided"
           echo "Usage: $0 <disk-path> <output-measurements-file>"
           exit 1
         fi
 
-        DISK="$1"
         OUTPUT_FILE="$2"
-
-        launch_guest() {
-          echo "Launching QEMU guest..."
-          cp /usr/share/edk2/ovmf/OVMF_CODE.fd .
-
-          /usr/libexec/qemu-kvm \
-            -machine type=q35,accel=tcg,smm=off \
-            -m 2048 \
-            -cpu max \
-            -drive file=./OVMF_CODE.fd,format=raw,if=pflash \
-            -drive file="$DISK",format=qcow2 \
-            -chardev socket,id=chrtpm,path=./vtpm/swtpm.sock \
-            -tpmdev emulator,id=tpm0,chardev=chrtpm \
-            -device tpm-tis,tpmdev=tpm0 \
-            -nographic \
-            -serial file:serial.log \
-            -monitor telnet::45454,server,nowait
-        }
-
-        # Subcommand: stop
-        stop_guest() {
-          echo "Stopping QEMU guest..."
-          echo q | nc localhost 45454
-        }
-
-        # Subcommand: swtpm
-        setup_swtpm() {
-          echo "Setting up software TPM..."
-          mkdir -p vtpm
-          swtpm socket \
-            --tpmstate dir=./vtpm \
-            --ctrl type=unixio,path=./vtpm/swtpm.sock \
-            --tpm2
-        }
-
-        # Subcommand: wait
-        wait_for_guest() {
-          echo "Waiting for guest to boot..."
-          timeout=1200
-          elapsed=0
-          touch serial.log
-          while ! grep -q "login:" serial.log; do
-            sleep 2
-            elapsed="$((elapsed + 2))"
-            if [ "$elapsed" -ge "$timeout" ]; then
-              echo "Guest failed to boot within ${timeout}s." >&2
-              exit 1
-            fi
-          done
-          echo "Guest booted correctly!"
-        }
-
-        # Subcommand: scrape
-        scrape_logs() {
-          # Extract the PCR block from the log.
-
-          # This assumes the block starts with "Detected vTPM PCR values:"
-          # and ends when a non-indented line appears.
-          pcr_block=$(sed -n '/Detected vTPM PCR values:/,/^[^[:space:]]/p' serial.log)
-
-          # detect line "sha***:"
-          alg=$(echo "$pcr_block" | grep -E "^[[:space:]]*sha.*:" | awk -F':' '{print $1}' | tr -d '[:space:]')
-          echo -n "{\"measurements\":{\"${alg}\":{"
-          # Now filter for PCRs 3, 9, 11 and 12.
-          echo "$pcr_block" | grep -E "^[[:space:]]*(3|9|11|12)[[:space:]]*:" | while read -r line; do
-            # Use awk to split the line at the colon.
-            index=$(echo "$line" | awk -F':' '{print $1}' | tr -d '[:space:]')
-            value=$(echo "$line" | awk -F':' '{print tolower($2)}' | tr -d '[:space:]')
-            echo -n "${need_sep:+,}\"pcr$(printf "%02d" "$index")\":\"$value\""
-            need_sep=1
-          done
-          echo "}}}"
-        }
-
-        # Main command dispatch
-        main() {
-            setup_swtpm &
-            launch_guest &
-            wait_for_guest
-            scrape_logs > "$OUTPUT_FILE"
-            stop_guest
-            jq -e . "$OUTPUT_FILE"
-
-            rm -f serial.log
-            rm -rf vtpm/
-        }
-
-        main "$@"
+        echo '{"measurements":{}}' > "$OUTPUT_FILE"
+        echo "s390x: PCR measurement skipped — empty measurements.json written to $OUTPUT_FILE"
         REMOTESSHEOF
 
         # make scripts executable and sync them to the cloud VM.

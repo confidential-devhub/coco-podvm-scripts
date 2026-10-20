@@ -63,9 +63,10 @@ spec:
     default: []
   - name: build-platforms
     description: List of platforms to build the disk images on. The available set of values is determined by the configuration of the multi-platform-controller.
+      For s390x cross-builds, use linux-root/amd64 (x86_64 host with qemu-system-s390x for emulation).
     type: array
     default:
-    - linux-root/amd64
+    - linux-root/amd64   # x86_64 host — cross-builds s390x via qemu-system-s390x emulation
   - name: buildah-format
     default: docker
     type: string
