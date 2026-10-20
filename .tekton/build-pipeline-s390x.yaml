@@ -200,14 +200,7 @@ spec:
     runAfter:
     - prefetch-dependencies
     taskRef:
-      resolver: bundles
-      params:
-      - name: name
-        value: build-dm-verity-image
-      - name: bundle
-        value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-task:0.1@sha256:5fa24f3609752d70f90039abd9adb485c81fe5725609ac126fabec9c3cd57ac7
-      - name: kind
-        value: task
+      name: build-dm-verity-image-s390x
   - name: build-image-index
     params:
     - name: IMAGE
