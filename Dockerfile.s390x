@@ -1,0 +1,47 @@
+FROM registry.access.redhat.com/ubi9/ubi:latest
+
+# Optional: register the host against RHSM to access full RHEL repos.
+# Pass --secret=id=org_id,env=ORG_ID --secret=id=activation_key,env=ACTIVATION_KEY
+# to podman build if running on an unsubscribed system.
+RUN --mount=type=secret,id=org_id --mount=type=secret,id=activation_key \
+    if [[ -f /run/secrets/org_id && -f /run/secrets/activation_key ]]; then \
+        rm -f /etc/rhsm-host && rm -f /etc/pki/entitlement-host; \
+        subscription-manager register \
+            --org=$(cat /run/secrets/org_id) \
+            --activationkey=$(cat /run/secrets/activation_key); \
+    fi
+
+RUN dnf -y update
+
+# Core build tools needed on s390x:
+#   - jq, openssl, qemu-img  : same as x86_64
+#   - libguestfs / guestfs-tools : provides virt-customize
+#   - podman                 : pull CoCo payload container images
+#   - cpio                   : archive handling
+#
+# NOT included vs Dockerfile (x86_64):
+#   - systemd-ukify          : UKI addon builder — not used on s390x (no EFI)
+#   - sbsigntools            : EFI Secure Boot signing — not used on s390x
+RUN dnf install -y \
+        cpio \
+        jq \
+        openssl \
+        qemu-img \
+        libguestfs \
+        podman \
+    && dnf clean all
+
+# Add EPEL for guestfs-tools (virt-customize) which may not be in UBI
+RUN curl -O https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
+    dnf install -y epel-release-latest-9.noarch.rpm && \
+    rm epel-release-latest-9.noarch.rpm
+
+RUN dnf install -y guestfs-tools libguestfs libguestfs-appliance && dnf clean all
+
+# Copy all scripts into the image
+ADD scripts /scripts
+
+# virt-customize requires direct backend to work inside a container
+ENV LIBGUESTFS_BACKEND=direct
+
+CMD ["/scripts/create-verity-podvm-s390x.sh", "/disk.qcow2"]
