@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/confidential-devhub/coco-podvm-scripts?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
+      == "main" && ( ".tekton/osc-dm-verity-image-s390x-push.yaml".pathChanged() || ".tekton/build-pipeline-s390x.yaml".pathChanged() || ".tekton/build-dm-verity-image-s390x.yaml".pathChanged() )
+  labels:
+    appstudio.openshift.io/application: openshift-sandboxed-containers
+    appstudio.openshift.io/component: osc-dm-verity-image-s390x
+    pipelines.appstudio.openshift.io/type: build
+  name: osc-dm-verity-image-s390x-on-push
+  namespace: ose-osc-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  - name: output-image
+    value: quay.io/redhat-user-workloads/ose-osc-tenant/osc-dm-verity-image-s390x:{{revision}}
+  - name: dockerfile
+    value: Dockerfile
+  taskRunSpecs:
+    - pipelineTaskName: build-vm-image
+      stepSpecs:
+        - name: download-rhel-image
+          computeResources:
+            requests:
+              memory: 8Gi
+            limits:
+              memory: 8Gi
+  pipelineRef:
+    name: build-pipeline-s390x
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-osc-dm-verity-image-s390x
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'
+status: {}

@@ -10,7 +10,7 @@ metadata:
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression:
       event == "pull_request" && target_branch
-      == "main"
+      == "main" && ( ".tekton/osc-dm-verity-image-pull-request.yaml".pathChanged() || ".tekton/build-pipeline.yaml".pathChanged() )
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: openshift-sandboxed-containers
