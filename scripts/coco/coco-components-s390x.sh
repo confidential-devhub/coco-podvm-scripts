@@ -217,6 +217,29 @@ else
             --org="${ORG_ID}" --activationkey="${ACTIVATION_KEY}"
     fi
 
+    # 9b. Force DNF to resolve packages for s390x, not the host arch (x86_64).
+    #
+    # Inside a chroot, uname -m returns the HOST kernel's architecture (x86_64).
+    # DNF derives $basearch from uname -m, so without this override it resolves
+    # and installs x86_64 RPMs (kernel, xmlsec1, afterburn, ...) into the s390x
+    # disk image — the installed binaries then cannot run on the guest at all.
+    #
+    # Setting arch=s390x in /etc/dnf/dnf.conf inside the chroot overrides the
+    # uname -m lookup for the duration of the chroot scripts.  We append the
+    # line (not overwrite) so any existing dnf.conf settings are preserved, and
+    # remove it on the way out so the guest image's dnf.conf is clean at boot.
+    DNF_CONF="$CHROOT_DIR/etc/dnf/dnf.conf"
+    if grep -q '^arch\s*=' "$DNF_CONF" 2>/dev/null; then
+        # Replace any existing arch= line (defensive: should not be set)
+        sed -i 's|^arch\s*=.*|arch = s390x|' "$DNF_CONF"
+        DNF_ARCH_INJECTED=replaced
+    else
+        echo 'arch = s390x' >> "$DNF_CONF"
+        DNF_ARCH_INJECTED=appended
+    fi
+    echo "DNF arch override set (action=$DNF_ARCH_INJECTED):"
+    grep '^arch' "$DNF_CONF" || true
+
     # 10. Run script-disk-mods-s390x.sh inside chroot
     echo "Running script-disk-mods-s390x.sh inside chroot ..."
     chroot "$CHROOT_DIR" bash /tmp/script-disk-mods-s390x.sh
@@ -224,6 +247,14 @@ else
     # 11. Run podvm_maker-s390x.sh inside chroot
     echo "Running podvm_maker-s390x.sh inside chroot ..."
     chroot "$CHROOT_DIR" bash /tmp/podvm_maker-s390x.sh
+
+    # 11b. Remove the arch override so the guest image's dnf.conf is clean at boot.
+    if [[ "$DNF_ARCH_INJECTED" == "appended" ]]; then
+        sed -i '/^arch\s*=\s*s390x/d' "$DNF_CONF"
+    elif [[ "$DNF_ARCH_INJECTED" == "replaced" ]]; then
+        sed -i '/^arch\s*=/d' "$DNF_CONF"
+    fi
+    echo "DNF arch override removed from guest dnf.conf."
 
     # 12. Set root password if requested
     if [[ -n "$ROOT_PASSWORD" ]]; then

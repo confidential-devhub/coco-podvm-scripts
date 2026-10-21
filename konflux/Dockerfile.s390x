@@ -10,10 +10,18 @@ FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796e
 
 FROM registry.redhat.io/ubi9/ubi-init:9.8-1781514776
 
-# qemu binaries from Fedora stage — placed in /usr/local/bin so they are on
-# PATH inside the container without any VM-level install or bind-mount.
+# qemu binaries from Fedora stage.
+# Placed in /usr/local/bin for PATH access AND symlinked into /usr/bin/.
+#
+# The symlink into /usr/bin/ is required because libvirt's QEMU driver
+# probes /usr/bin/qemu-system-* at startup to build its capabilities XML.
+# Without it, libvirt has no knowledge of qemu-system-s390x and rejects
+# --virt-type qemu --boot emulator=/usr/local/bin/qemu-system-s390x with
+# "Host does not support any virtualization options for architecture 's390x'",
+# even though the binary is on PATH and functional.
 COPY --from=fedora-qemu /usr/bin/qemu-system-s390x /usr/local/bin/qemu-system-s390x
 COPY --from=fedora-qemu /usr/bin/qemu-s390x-static  /usr/local/bin/qemu-s390x-static
+RUN ln -sf /usr/local/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
 
 RUN subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
 

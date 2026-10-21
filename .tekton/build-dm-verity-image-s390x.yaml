@@ -22,8 +22,13 @@ spec:
       type: string
     - name: RHEL_IMAGE_CHECKSUM
       type: string
-      description: The checksum to use for downloading the RHEL image
-      default: e15cb333529c332e76e4b1b946efe3515c99f996546675aec18e8effdf2540a5
+      description: >-
+        SHA-256 checksum of the RHEL 10 s390x DVD ISO from the Red Hat API.
+        MUST be the s390x ISO checksum — the x86_64 default is intentionally
+        left blank so a misconfigured pipeline fails fast at download time.
+        Obtain the correct value from:
+          https://access.redhat.com/downloads/content/rhel/s390x/10.2/iso
+      default: ""
     - name: KERNEL_VERSION
       type: string
       description: The kernel version that the stock kernel included with the RHEL image will be updated to
@@ -82,35 +87,67 @@ spec:
             secretKeyRef:
               name: $(params.REDHAT_OFFLINE_TOKEN_SECRET)
               key: offline-token
-        - name: RHEL_IMAGE_CHECKSUM
-          value: $(params.RHEL_IMAGE_CHECKSUM)
       script: |-
         #!/bin/bash
         set -euo pipefail
 
-        # Check that required variables are populated
         if [ -z "${REDHAT_OFFLINE_TOKEN:-}" ]; then
           echo "Error: REDHAT_OFFLINE_TOKEN is not set"
           exit 1
         fi
-        
-        if [ -z "${RHEL_IMAGE_CHECKSUM:-}" ]; then
-          echo "Error: RHEL_IMAGE_CHECKSUM is not set"
+
+        FILENAME="rhel-10.2-s390x-dvd.iso"
+        filepath="/var/workdir/rhel.iso"
+
+        echo "[1] Getting access token..."
+        TOKEN=$(curl -s --retry 5 \
+          https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token \
+          -d grant_type=refresh_token -d client_id=rhsm-api \
+          -d refresh_token="${REDHAT_OFFLINE_TOKEN}" | jq -r .access_token)
+        echo "    Token length: ${#TOKEN}"
+
+        echo "[2] Querying images API for RHEL 10.2 s390x..."
+        IMAGES=$(curl -s --retry 5 -X GET \
+          "https://api.access.redhat.com/management/v1/images/rhel/10.2/s390x" \
+          -H "accept: application/json" -H "Authorization: Bearer ${TOKEN}")
+        echo "    Raw response (first 500 chars): ${IMAGES:0:500}"
+
+        echo "[3] Looking for filename: ${FILENAME}"
+        DOWNLOAD_HREF=$(echo "${IMAGES}" | jq -r \
+          --arg fn "${FILENAME}" '.body[] | select(.filename == $fn) | .downloadHref')
+        echo "    downloadHref: ${DOWNLOAD_HREF}"
+
+        if [ -z "${DOWNLOAD_HREF}" ] || [ "${DOWNLOAD_HREF}" = "null" ]; then
+          echo "ERROR: '${FILENAME}' not found in the images listing."
+          echo "       Available filenames:"
+          echo "${IMAGES}" | jq -r ".body[].filename"
           exit 1
         fi
-        
-        echo "Using RHEL image checksum: ${RHEL_IMAGE_CHECKSUM}"
 
-        alias curl="curl --retry 5"
-        token_api_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-        download_api_url=https://api.access.redhat.com/management/v1/images/${RHEL_IMAGE_CHECKSUM}/download
-        token=$(curl "${token_api_url}" \
-            -d grant_type=refresh_token -d client_id=rhsm-api -d refresh_token="${REDHAT_OFFLINE_TOKEN}" | jq --raw-output .access_token)
-        download_url=$(curl -X 'GET' "${download_api_url}" \
-            -H "Authorization: Bearer ${token}" -H 'accept: application/json' | jq --raw-output .body.href)
-        filepath="/var/workdir/rhel.iso"
-        curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
-        echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
+        echo "[4] Resolving final download URL..."
+        DOWNLOAD_URL=$(curl -s --retry 5 -X GET "${DOWNLOAD_HREF}" \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -H "accept: application/json" | jq -r .body.href)
+        echo "    Download URL: ${DOWNLOAD_URL:0:100}..."
+
+        echo "[5] Downloading to ${filepath}..."
+        curl --retry 5 -# -X GET "${DOWNLOAD_URL}" \
+          -H "Authorization: Bearer ${TOKEN}" --output "${filepath}"
+
+        echo "[6] SHA256 of downloaded ISO:"
+        sha256sum "${filepath}"
+
+        # Guard: verify the ISO is s390x, not x86_64.
+        # blkid reads the ISO volume label — the s390x label contains "s390x".
+        # An x86_64 ISO would fail under qemu-system-s390x after a 2-hour run.
+        ISO_LABEL=$(blkid -s LABEL -o value "${filepath}" 2>/dev/null || true)
+        echo "    ISO volume label: ${ISO_LABEL}"
+        if [[ "${ISO_LABEL}" != *"s390x"* ]]; then
+          echo "ERROR: Downloaded ISO is not an s390x image (label='${ISO_LABEL}')."
+          echo "       Expected a label containing 's390x'."
+          exit 1
+        fi
+        echo "    ISO arch guard passed."
     - name: build
       image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
       computeResources:
@@ -200,38 +237,80 @@ spec:
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
         # Stage 1: build s390x base qcow2 image (inside container).
-        # qemu-system-s390x is bind-mounted from the host; virt-install
-        # uses --arch s390x with the s390x kickstart (no --boot uefi).
-        time sudo podman exec -t --latest virt-install \
-          --virt-type qemu \
-          --cpu host-model \
-          --os-variant rhel10.0 \
-          --arch s390x \
-          --name disk \
-          --memory 8192 \
-          --location /workspace/rhel.iso \
-          --disk path=$DISK,format=qcow2,bus=scsi,size=7 \
-          --initrd-inject=/workspace/source/helpers/rhel10-s390x-dm-root.ks \
-          --nographics \
-          --extra-args 'console=ttysclp0 inst.ks=file:/rhel10-s390x-dm-root.ks' \
-          --transient
+        #
+        # Delegate to helpers/build-s390x-base-image.sh — the validated script
+        # used for all successful manual x86 cross-builds.  Direct virt-install
+        # invocation had five bugs:
+        #
+        #   1. No --boot emulator= flag → libvirt caps check returns
+        #      "Host does not support any virtualization options for
+        #      architecture 's390x'" (libvirt only knows x86 emulators by
+        #      default; the custom qemu-system-s390x must be named explicitly).
+        #
+        #   2. --cpu host-model → meaningless/wrong for TCG (software
+        #      emulation has no host CPU model to mirror).
+        #
+        #   3. --os-variant rhel10.0 → stale flag name (current flag is
+        #      --osinfo); rhel10.0 also absent from the container's osinfo DB.
+        #
+        #   4. --disk bus=scsi → wrong for s390x; Anaconda on s390x expects
+        #      virtio-blk (bus=virtio), not virtio-scsi.
+        #
+        #   5. --location /workspace/rhel.iso (raw ISO file) → virt-install
+        #      --location requires a mounted install-tree directory, not an
+        #      .iso file.  Additionally, without inst.repo=hd:LABEL=<label>:/
+        #      dracut cannot find images/install.img (stage2 squashfs) and
+        #      loops forever.  Without inst.ks.org_id= / inst.ks.activation_key=
+        #      the kickstart %post cannot register RHSM and gated packages
+        #      (afterburn, xmlsec1) are not installed.
+        #
+        # build-s390x-base-image.sh fixes all five: it loop-mounts the ISO,
+        # reads the volume label via blkid, uses --boot emulator= and
+        # --osinfo detect=on,require=off and bus=virtio, and passes full
+        # inst.repo + RHSM credentials on the kernel cmdline.
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ISO_PATH=/workspace/rhel.iso
+          export OUTPUT_DIR=/output/qcow2
+          export OUTPUT_NAME=disk.qcow2
+          export DISK_SIZE_GB=7
+          export VM_MEMORY_MB=8192
+          bash /workspace/source/helpers/build-s390x-base-image.sh
+        "
 
-        # Stage 2: install CoCo components (inside container).
-        # coco-components-s390x.sh detects non-s390x host and uses NBD mount +
-        # chroot + qemu-s390x-static (bind-mounted from host) via binfmt_misc.
-        time sudo podman exec -t --latest \
-          env ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm \
-          /workspace/source/scripts/coco/coco-components-s390x.sh $DISK
+        # Stage 2+3: install CoCo components + apply dm-verity (inside container).
+        #
+        # Delegate to scripts/create-verity-podvm-s390x.sh — the validated
+        # orchestrator used for all successful manual x86 cross-builds.
+        #
+        # Calling coco-components-s390x.sh and verity-s390x.sh directly had
+        # two bugs:
+        #
+        #   A. DISK_FORMAT not set: verity-s390x.sh line 70 exits immediately
+        #      with "DISK_FORMAT is unset" when called directly.
+        #      create-verity-podvm-s390x.sh calls get_input_img_format() which
+        #      detects the format from the disk and exports DISK_FORMAT=qcow2
+        #      before calling verity-s390x.sh.
+        #
+        #   B. LIBGUESTFS_HV wrapper not set up: create-verity-podvm-s390x.sh
+        #      writes /usr/local/bin/qemu-s390x-libguestfs-wrapper that rewrites
+        #      libguestfs's x86-only -machine q35 and -cpu flags to s390x
+        #      equivalents before exec-ing qemu-system-s390x.  Without this
+        #      wrapper the verity zipl VM boot fails with "unsupported machine
+        #      type: q35".
+        #
+        # ARTIFACTS_FOLDER, ORG_ID, ACTIVATION_KEY, ROOT_PASSWORD are exported
+        # so the sub-scripts pick them up transparently.
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm
+          bash /workspace/source/scripts/create-verity-podvm-s390x.sh $DISK
+        "
 
-        # Stage 3: apply dm-verity (inside container).
-        # verity-s390x.sh detects non-s390x host and sets
-        # LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x automatically.
-        time sudo podman exec -t --latest \
-          /workspace/source/scripts/verity/verity-s390x.sh $DISK
-
-        # Stage 4: PCR measurement.
-        # OVMF (x86_64 EFI) is not applicable for s390x; write an empty
-        # measurements file so the push step continues without modification.
+        # s390x has no OVMF/EFI PCR measurement — write empty measurements so
+        # script-push.sh receives a valid JSON file without a dedicated stage.
         echo '{"measurements":{}}' > $MEASUREMENTS
 
         # Push image
@@ -248,126 +327,6 @@ spec:
         cp -r output/rootfs $BUILD_DIR/ 2>/dev/null || true
         cp output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
 
-        REMOTESSHEOF
-
-        cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        # Accept disk path as first argument
-        if [ -z "$1" ]; then
-          echo "Error: Disk path not provided"
-          echo "Usage: $0 <disk-path>"
-          exit 1
-        fi
-
-        DISK="$1"
-
-        ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
-        coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
-
-        NBD_DEVICE=/dev/nbd0
-        EFI_PN=nbd0p1
-        ROOT_PN=nbd0p2
-
-        LUKS_MINIMAL_SPACE_MB=2500
-        VERITY_MAX_SPACE_MB=512
-        DISK_FORMAT=qcow2
-
-        # Resize the disk
-        MB=$((1024 * 1024))
-        current_size=$(qemu-img info -f $DISK_FORMAT --output json $DISK | jq '."virtual-size"')
-        # new_size=$((current_size * 110 / 100)) # increase 10% for verity - obsolete
-        luks_min_space=$((LUKS_MINIMAL_SPACE_MB * MB))
-        verity_max_space=$((current_size * 7 / 100))
-        new_size=$((current_size + luks_min_space + verity_max_space))
-        rounded_size=$(((new_size + MB - 1) / MB * MB))
-        echo "Current disk size: $current_size"
-        echo "New disk size: $rounded_size"
-        qemu-img resize "$DISK" -f $DISK_FORMAT "${rounded_size}"
-
-        temp_dir=$(mktemp -d)
-        cd $temp_dir
-
-        temp_mount=$temp_dir/mnt
-        mkdir $temp_mount
-
-        modprobe nbd
-        qemu-nbd -c $NBD_DEVICE -f $DISK_FORMAT $DISK
-        udevadm settle
-        sleep 2
-
-        # Debug
-        fdisk -l $NBD_DEVICE
-
-        # call_fsck
-        fs_type=$(blkid -o value -s TYPE /dev/$ROOT_PN)
-        fsck.$fs_type -p /dev/$ROOT_PN
-
-        # update the values in the conf files
-        sed -i "s|{INSERT_HERE}|$current_size|g" /workspace/source/konflux/verity-definitions/root.conf
-        sed -i "s|{INSERT_HERE}|$verity_max_space|g" /workspace/source/konflux/verity-definitions/verity.conf
-
-        # apply_dmverity
-        # create config files and folders for systemd-repart and UKI
-        systemd-repart $NBD_DEVICE --dry-run=no --definitions=/workspace/source/konflux/verity-definitions/ --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > roothash.txt
-        RH=$(cat roothash.txt)
-
-        partprobe $NBD_DEVICE
-        # Allow udev events to settle again after partprobe
-        udevadm settle
-        sleep 1 # Optional small sleep just in case
-
-        if [ "$RH" == "TBD" ]; then
-            echo "roothash is TBD, something went wrong. Make sure the image you are using doesn't have a /verity partition already!"
-            echo "Exiting."
-            exit 1
-        fi
-
-        # create_uki_addon
-        UKI_FOLDER=$temp_mount/EFI/Linux
-        ADDON_NAME=verity.addon.efi
-        mount /dev/$EFI_PN $temp_mount
-        efi_files=($UKI_FOLDER/*.efi)
-        # Check if any EFI files exist
-        if [[ ${#efi_files[@]} -eq 0 || ! -f "${efi_files[0]}" ]]; then
-            echo "Error: No .efi files found in $UKI_FOLDER"
-            exit 1
-        fi
-
-        # If multiple files, pick the most recent one
-        if [[ ${#efi_files[@]} -gt 1 ]]; then
-            echo "Found ${#efi_files[@]} EFI files: ${efi_files[@]}"
-            echo ""
-            echo "Current EFI fallback value (/boot/efi/EFI/redhat/BOOTX64.CSV):"
-            cat mnt/EFI/redhat/BOOTX64.CSV
-            echo ""
-            echo "Selecting the most recently modified UKI..."
-            UKI_NAME=$(ls -t "${efi_files[@]}" | head -1)
-        else
-            UKI_NAME=${efi_files[0]}
-        fi
-
-        echo "Using UKI: $UKI_NAME"
-        mkdir -p "$UKI_NAME.extra.d"
-        cd $UKI_NAME.extra.d
-        rm -f $ADDON_NAME
-
-        if [[ -n "$SB_PRIVATE_KEY" && -n "$SB_CERTIFICATE" ]]; then
-            ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
-            echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
-        fi
-        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
-        echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
-        /usr/lib/systemd/ukify inspect $ADDON_NAME
-        cd
-        umount $temp_mount
-
-        # Debug
-        fdisk -l $NBD_DEVICE
-
-        # umount
-        qemu-nbd --disconnect $NBD_DEVICE
         REMOTESSHEOF
 
         # script-push.sh script is intended run _inside_ podman on the ssh host and requires sudo
@@ -396,6 +355,7 @@ spec:
 
         DISK_PATH="$1"
         MEASUREMENTS_PATH="$2"
+        ROOTHASH_PATH="${DISK_PATH}.roothash"
 
         dnf -y install buildah skopeo pigz jq
 
@@ -403,6 +363,18 @@ spec:
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
         buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
+
+        # s390x: push the dm-verity roothash as a sidecar file in the OCI image.
+        # The roothash is written by verity-s390x.sh to <disk>.roothash and MUST
+        # be supplied at VM start time as the roothash= kernel cmdline argument.
+        # Embedding it in the OCI image makes it retrievable without re-running
+        # veritysetup, and allows the peer-pods controller to read it at pod launch.
+        if [ -f "$ROOTHASH_PATH" ]; then
+          buildah add $buildah_container "$ROOTHASH_PATH" image/roothash
+          echo "roothash bundled: $(cat $ROOTHASH_PATH)"
+        else
+          echo "WARNING: roothash file not found at $ROOTHASH_PATH — skipping"
+        fi
         # Get the list of labels from the LABELS env variable and apply them to the image
         IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
         for label in "${LABEL_ARRAY[@]}"; do
@@ -411,23 +383,7 @@ spec:
           buildah config --label "$label" $buildah_container
         done
 
-        # Add PCR values as OCI manifest annotations
-        ANNOTATION_ARGS=()
-        if [ -f "$MEASUREMENTS_PATH" ]; then
-          # Extract hash algorithm and PCR values from measurements.json
-          alg=$(jq -r '.measurements | keys[0]' "$MEASUREMENTS_PATH")
-
-          # Add hash algorithm as separate annotation
-          ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.algorithm=${alg}")
-
-          # Add each PCR value as a separate annotation
-          for pcr in $(jq -r ".measurements.${alg} | keys[]" "$MEASUREMENTS_PATH"); do
-            pcr_value=$(jq -r ".measurements.${alg}.${pcr}" "$MEASUREMENTS_PATH")
-            ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.${pcr}=${pcr_value}")
-          done
-        fi
-
-        buildah commit "${ANNOTATION_ARGS[@]}" $buildah_container $image_name
+        buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
         MANIFEST_DIGEST=$(cat image-digest)
@@ -442,25 +398,6 @@ spec:
         # so that we can reference that safely in the pipeline.
         IMAGE_URL_CLEANED=$(echo -n "$OUTPUT_IMAGE" | tr -d '\n')
         echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
-        REMOTESSHEOF
-
-        cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -euo pipefail
-
-        # PCR measurement via OVMF (x86_64 EFI firmware) is not applicable for
-        # s390x. Write an empty measurements file so the push step can proceed
-        # without changes. A proper s390x vTPM measurement flow is tracked
-        # separately.
-        if [ -z "$2" ]; then
-          echo "Error: output file not provided"
-          echo "Usage: $0 <disk-path> <output-measurements-file>"
-          exit 1
-        fi
-
-        OUTPUT_FILE="$2"
-        echo '{"measurements":{}}' > "$OUTPUT_FILE"
-        echo "s390x: PCR measurement skipped — empty measurements.json written to $OUTPUT_FILE"
         REMOTESSHEOF
 
         # make scripts executable and sync them to the cloud VM.
