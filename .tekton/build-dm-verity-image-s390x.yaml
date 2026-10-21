@@ -167,7 +167,10 @@ spec:
               bash -c 'dnf install -y qemu-user-static-s390x >/dev/null 2>&1 && \
                        cp /usr/bin/qemu-s390x-static /out/'
             sudo chmod 755 /usr/local/bin/qemu-s390x-static
-            file /usr/local/bin/qemu-s390x-static | grep -q "statically linked" || \
+            # Accept both "statically linked" (old binutils) and "static-pie linked"
+            # (modern PIE static binary from Fedora 40) — both are self-contained
+            # and compatible with binfmt_misc. See Bug 24 in the session tracker.
+            file /usr/local/bin/qemu-s390x-static | grep -qE "static(ally|-pie) linked" || \
               { echo "ERROR: qemu-s390x-static is not statically linked"; exit 1; }
           else
             echo "qemu-s390x-static already present."
@@ -190,7 +193,25 @@ spec:
             --arch s390x --machine s390-ccw-virtio --virttype qemu \
             | grep -q 's390x' || { echo "ERROR: libvirtd cannot see qemu-system-s390x"; exit 1; }
 
-          # ── 5. binfmt_misc registration ───────────────────────────────────────
+          # ── 5. verity / disk tools ────────────────────────────────────────────
+          # veritysetup, systemd-repart, partprobe (parted), e2fsck (e2fsprogs),
+          # and qemu-nbd are required by verity-s390x.sh (pre-flight check line 589)
+          # and coco-components-s390x.sh.  On a Konflux worker these are pre-installed;
+          # on a fresh Fyre/RHEL 9 host they may be absent.  Install only what is missing.
+          MISSING_PKGS=()
+          command -v veritysetup    &>/dev/null || MISSING_PKGS+=(veritysetup)
+          command -v systemd-repart &>/dev/null || MISSING_PKGS+=(systemd-repart)
+          command -v partprobe      &>/dev/null || MISSING_PKGS+=(parted)
+          command -v e2fsck         &>/dev/null || MISSING_PKGS+=(e2fsprogs)
+          command -v qemu-nbd       &>/dev/null || MISSING_PKGS+=(qemu-nbd)
+          if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+            echo "Installing missing verity/disk tools: ${MISSING_PKGS[*]}"
+            sudo dnf install -y "${MISSING_PKGS[@]}"
+          else
+            echo "All verity/disk tools already present."
+          fi
+
+          # ── 6. binfmt_misc registration ───────────────────────────────────────
           # coco-components-s390x.sh registers/removes this itself per-run, but
           # pre-registering here ensures it is present before the build step starts.
           if [[ ! -f /proc/sys/fs/binfmt_misc/qemu-s390x ]]; then
@@ -273,30 +294,40 @@ spec:
         DISK=/output/qcow2/disk.qcow2
         MEASUREMENTS=/output/qcow2/measurements.json
 
+        # Build the s390x builder container from konflux/Dockerfile.s390x.
+        # Mirrors the x86_64 flow exactly: all build work runs inside the
+        # privileged container via podman exec, not on the bare VM.
+        # konflux/Dockerfile.s390x omits ukify/sbsigntools/edk2-ovmf/qemu-kvm
+        # (no EFI on s390x; qemu-system-s390x is bind-mounted from the host).
+        # Extract osc-podvm-payload digest from Dockerfile for SBOM (same as x86).
+        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile.s390x | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
-          -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
+          -t builder-s390x -f $BUILD_DIR/source/konflux/Dockerfile.s390x $BUILD_DIR/source
 
-        # Extract osc-podvm-payload digest from Dockerfile for SBOM
-        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
-
+        # Run the builder container daemonised (same flags as x86_64).
+        # Bind-mount the qemu binaries installed by setup-cross-arch so they
+        # are available inside the container without re-installing them.
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
           -v /lib/modules:/lib/modules:ro,Z \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
+          --mount type=bind,source=/usr/local/bin/qemu-system-s390x,target=/usr/local/bin/qemu-system-s390x \
+          --mount type=bind,source=/usr/local/bin/qemu-s390x-static,target=/usr/local/bin/qemu-s390x-static \
           --user 0 \
           --security-opt=apparmor=unconfined \
           --security-opt=seccomp=unconfined \
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
           --env=LIBGUESTFS_BACKEND=direct \
-          builder
+          builder-s390x
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
 
-        # s390x: cross-arch virt-install using qemu-system-s390x emulation.
-        # Uses the s390x kickstart (no --boot uefi, console=ttysclp0).
+        # Stage 1: build s390x base qcow2 image (inside container).
+        # qemu-system-s390x is bind-mounted from the host; virt-install
+        # uses --arch s390x with the s390x kickstart (no --boot uefi).
         time sudo podman exec -t --latest virt-install \
           --virt-type qemu \
           --cpu host-model \
@@ -311,16 +342,18 @@ spec:
           --extra-args 'console=ttysclp0 inst.ks=file:/rhel10-s390x-dm-root.ks' \
           --transient
 
-        # Stage 2: install CoCo components into the s390x disk image.
-        # coco-components-s390x.sh auto-detects x86_64 host and uses NBD mount +
-        # chroot + qemu-s390x-static (binfmt_misc) instead of virt-customize.
-        ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm \
+        # Stage 2: install CoCo components (inside container).
+        # coco-components-s390x.sh detects non-s390x host and uses NBD mount +
+        # chroot + qemu-s390x-static (bind-mounted from host) via binfmt_misc.
+        time sudo podman exec -t --latest \
+          env ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm \
           /workspace/source/scripts/coco/coco-components-s390x.sh $DISK
 
-        # Stage 3: apply dm-verity using the s390x pipeline.
-        # create-verity-podvm-s390x.sh auto-sets LIBGUESTFS_HV=qemu-system-s390x
-        # when running on a non-s390x host.
-        /workspace/source/scripts/verity/verity-s390x.sh $DISK
+        # Stage 3: apply dm-verity (inside container).
+        # verity-s390x.sh detects non-s390x host and sets
+        # LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x automatically.
+        time sudo podman exec -t --latest \
+          /workspace/source/scripts/verity/verity-s390x.sh $DISK
 
         # Stage 4: PCR measurement.
         # OVMF (x86_64 EFI) is not applicable for s390x; write an empty
@@ -341,19 +374,6 @@ spec:
         cp -r output/rootfs $BUILD_DIR/ 2>/dev/null || true
         cp output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
 
-        REMOTESSHEOF
-
-        # NOTE: script-disk-mods, script-podvm-maker, podvm-setup, and script-verity
-        # heredocs are intentionally removed for s390x. The build steps above
-        # delegate directly to the s390x scripts already present in the source tree:
-        #   - scripts/coco/coco-components-s390x.sh  (stages disk-mods + podvm-maker)
-        #   - scripts/verity/verity-s390x.sh          (dm-verity)
-        # No inline x86_64 logic is needed here.
-
-        cat >>scripts/script-verity-stub.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        # stub: s390x verity is applied by verity-s390x.sh called directly in script-build.sh
-        echo "verity-stub: nothing to do for s390x"
         REMOTESSHEOF
 
         cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
