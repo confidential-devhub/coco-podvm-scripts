@@ -478,8 +478,16 @@ EOF
     # root=/dev/vda2 is the raw partition — systemd-veritysetup-generator
     # won't activate dm-verity because roothash= is not on the cmdline,
     # so the partition mounts normally read-write and zipl can write bootmap.
+    # Prefer /usr/bin/qemu-system-s390x — the path libvirt probed at startup
+    # to build its capabilities XML.  command -v may resolve to the symlink
+    # target (/usr/local/bin/...) which libvirt has no capability entry for,
+    # causing "Host does not support any virtualization options for 's390x'".
     local QEMU_S390X
-    QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    if [[ -x /usr/bin/qemu-system-s390x ]]; then
+        QEMU_S390X=/usr/bin/qemu-system-s390x
+    else
+        QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    fi
     if [[ -z "$QEMU_S390X" ]]; then
         echo "Error: qemu-system-s390x not found — required for zipl VM boot" >&2
         exit 1

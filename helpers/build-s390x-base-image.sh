@@ -195,10 +195,24 @@ if [[ "$HOST_ARCH" == "s390x" ]]; then
     VIRT_TYPE_ARGS=(--virt-type kvm)
     echo "Host arch: s390x — using KVM hardware acceleration"
 else
-    # Verify qemu-system-s390x is available before attempting the build
-    QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    # libvirt's QEMU driver probes /usr/bin/qemu-system-* at startup to build
+    # its capabilities XML.  It caches capabilities keyed by the EXACT binary
+    # path it probed — typically the symlink path /usr/bin/qemu-system-s390x.
+    #
+    # If command -v resolves to /usr/local/bin/qemu-system-s390x (the symlink
+    # target) instead, virt-install passes that path to libvirt, which finds no
+    # capabilities entry for it and rejects with:
+    #   "Host does not support any virtualization options for architecture 's390x'"
+    #
+    # Fix: always prefer /usr/bin/qemu-system-s390x (the path libvirt probed).
+    # Fall back to command -v only if /usr/bin/ does not have it.
+    if [[ -x /usr/bin/qemu-system-s390x ]]; then
+        QEMU_S390X=/usr/bin/qemu-system-s390x
+    else
+        QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    fi
     if [[ -z "$QEMU_S390X" ]]; then
-        echo "ERROR: qemu-system-s390x not found on PATH." >&2
+        echo "ERROR: qemu-system-s390x not found on PATH or at /usr/bin/qemu-system-s390x." >&2
         echo "  Install it first:" >&2
         echo "    Fedora/RHEL: sudo dnf install qemu-system-s390x" >&2
         echo "    Ubuntu:      sudo apt install qemu-system-misc" >&2

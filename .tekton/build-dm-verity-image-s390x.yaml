@@ -195,6 +195,7 @@ spec:
         export BUILD_DIR="$BUILD_DIR"
         export OUTPUT_IMAGE="$OUTPUT_IMAGE"
         export BUILDAH_IMAGE="$BUILDAH_IMAGE"
+        export KERNEL_VERSION="$KERNEL_VERSION"
 
         REMOTESSHEOF
 
@@ -231,7 +232,7 @@ spec:
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
           --env=LIBGUESTFS_BACKEND=direct \
-          --env=LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x \
+          --env=LIBGUESTFS_HV=/usr/bin/qemu-system-s390x \
           builder-s390x
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
@@ -300,12 +301,16 @@ spec:
         #      wrapper the verity zipl VM boot fails with "unsupported machine
         #      type: q35".
         #
-        # ARTIFACTS_FOLDER, ORG_ID, ACTIVATION_KEY, ROOT_PASSWORD are exported
+        # ARTIFACTS_FOLDER, ORG_ID, ACTIVATION_KEY, KERNEL_VERSION are exported
         # so the sub-scripts pick them up transparently.
+        # KERNEL_VERSION is forwarded so script-disk-mods-s390x.sh uses the
+        # pinned version from the Tekton param rather than auto-detecting from
+        # the image RPM DB (auto-detect is safe but verbose; pinned is explicit).
         time sudo podman exec -t --latest bash -c "
           export ORG_ID=\$(cat /activation-key/org)
           export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
           export ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm
+          export KERNEL_VERSION=$KERNEL_VERSION
           bash /workspace/source/scripts/create-verity-podvm-s390x.sh $DISK
         "
 

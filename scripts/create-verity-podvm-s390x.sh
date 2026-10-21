@@ -104,7 +104,14 @@ COCO_SCRIPT_LOCATION=$(realpath "$COCO_SCRIPT_LOCATION")
 #                     would otherwise block appliance launch.
 HOST_ARCH=$(uname -m)
 if [[ "$HOST_ARCH" != "s390x" ]]; then
-    QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    # Prefer /usr/bin/qemu-system-s390x — the exact path libvirt probed.
+    # command -v may resolve to /usr/local/bin/ (symlink target) which libvirt
+    # has no capability entry for, causing virt-install caps check failures.
+    if [[ -x /usr/bin/qemu-system-s390x ]]; then
+        QEMU_S390X=/usr/bin/qemu-system-s390x
+    else
+        QEMU_S390X=$(command -v qemu-system-s390x 2>/dev/null || true)
+    fi
     if [[ -z "$QEMU_S390X" ]]; then
         echo "ERROR: qemu-system-s390x not found on PATH." >&2
         echo "  Install it first:" >&2

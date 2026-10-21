@@ -1,61 +1,80 @@
-# Stage 0 — pull qemu binaries from Fedora 40.
-# qemu-system-s390x and qemu-s390x-static are not available in RHEL 9 repos.
-# Fedora 40 ships pre-built x86_64 binaries for both packages.  Copying them
-# here means the VM host never needs to be modified — all build work runs
-# inside this container.
+# Stage 0 — Fedora 40 stage: source of qemu-system-s390x + its runtime libs.
+#
+# WHY Fedora 40 and not RHEL 9:
+#   qemu-system-s390x is not available in any RHEL 9 repo (the QEMU cross-arch
+#   emulator targets are Fedora-only).  The Fedora 40 binary is dynamically
+#   linked against glibc 2.39 and other Fedora-versioned libs.  Copying just
+#   the binary into a UBI9 container (glibc 2.34) causes the capability probe
+#   that libvirt runs at startup ("qemu-system-s390x -machine none,accel=tcg")
+#   to fail with "GLIBC_2.38 not found", so libvirt records NO capabilities
+#   for s390x and rejects virt-install with:
+#     "Host does not support any virtualization options for architecture 's390x'"
+#
+# SOLUTION: use Fedora 40 as the full builder base — all tools that need to
+#   interact with the Fedora qemu binary (libvirt, virt-install, libguestfs)
+#   run on the same glibc version as the binary itself.
+#
+# qemu-s390x-static is statically linked (static-pie) — it has no glibc
+#   dependency and can safely be copied into any container.
 FROM registry.fedoraproject.org/fedora:40 AS fedora-qemu
 RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all
 
 FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796ec80f0ae36153be8ca0f550c68e340d8117f00193f2b224c0478b2c06bd7 as payload
 
-FROM registry.redhat.io/ubi9/ubi-init:9.8-1781514776
+# ── Main builder — Fedora 40 base ─────────────────────────────────────────────
+# Using Fedora 40 (not UBI9/ubi-init) so that qemu-system-s390x runs against
+# the same glibc (2.39) it was built with.  UBI9 has glibc 2.34 which is
+# missing GLIBC_2.38 symbols required by the Fedora 40 qemu binary.
+FROM registry.fedoraproject.org/fedora:40
 
-# qemu binaries from Fedora stage.
-# Placed in /usr/local/bin for PATH access AND symlinked into /usr/bin/.
-#
-# The symlink into /usr/bin/ is required because libvirt's QEMU driver
-# probes /usr/bin/qemu-system-* at startup to build its capabilities XML.
-# Without it, libvirt has no knowledge of qemu-system-s390x and rejects
-# --virt-type qemu --boot emulator=/usr/local/bin/qemu-system-s390x with
-# "Host does not support any virtualization options for architecture 's390x'",
-# even though the binary is on PATH and functional.
-COPY --from=fedora-qemu /usr/bin/qemu-system-s390x /usr/local/bin/qemu-system-s390x
+# Install systemd so the container can run as an init system (replaces ubi-init).
+# libvirt requires systemd for socket activation of virtqemud/libvirtd.
+RUN dnf install -y systemd && \
+    systemctl set-default multi-user.target && \
+    dnf clean all
+
+# qemu binaries — already present in this Fedora base from dnf, but use the
+# staged copy to ensure exact version match with the fedora-qemu stage.
+COPY --from=fedora-qemu /usr/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
 COPY --from=fedora-qemu /usr/bin/qemu-s390x-static  /usr/local/bin/qemu-s390x-static
-RUN ln -sf /usr/local/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
 
-RUN subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
+# Register RHSM so all packages can be installed from the activation key.
+# NOTE: registration happens at build time via the -v mount in podman build.
+RUN --mount=type=bind,source=/activation-key,target=/activation-key,rw \
+    subscription-manager register \
+        --org "$(cat /activation-key/org)" \
+        --activationkey "$(cat /activation-key/activationkey)" || true
 
-# systemd-repart: part of the systemd package on RHEL 9 — no separate RPM
-# qemu-nbd:       bundled in qemu-img on RHEL 9 — no separate RPM
+# Core build tools.
+# On Fedora 40:
+#   - systemd-repart : ships as part of systemd — no separate pkg
+#   - qemu-nbd       : ships as qemu-img dependency or standalone
+#   - libvirt + virt-install : available natively on Fedora 40
 RUN dnf install -y \
-    cpio \
-    jq \
-    openssl \
-    qemu-img \
-    libguestfs \
-    guestfs-tools \
-    libguestfs-tools \
-    libvirt \
-    virt-install \
-    nc \
-    veritysetup \
-    parted \
-    e2fsprogs \
-    kmod
-
-# NOT included vs konflux/Dockerfile (x86_64):
-#   - systemd-ukify : UKI addon builder — not used on s390x (no EFI)
-#   - edk2-ovmf     : x86_64 EFI firmware — not used on s390x
-#   - qemu-kvm      : x86_64 KVM — not used; qemu-system-s390x is now baked
-#                     into this image via the fedora-qemu stage above
+        cpio \
+        jq \
+        openssl \
+        qemu-img \
+        qemu-nbd \
+        libguestfs \
+        guestfs-tools \
+        virt-install \
+        libvirt \
+        libvirt-daemon-driver-qemu \
+        nc \
+        veritysetup \
+        parted \
+        e2fsprogs \
+        kmod \
+        subscription-manager \
+    && dnf clean all
 
 COPY qemu.conf /etc/libvirt/qemu.conf
 
 COPY --from=payload /podvm-binaries.tar.gz /payload/
 COPY --from=payload /pause-bundle.tar.gz /payload/
 
-# virt-customize requires direct backend to work inside a container.
-# LIBGUESTFS_HV points at the Fedora-sourced qemu-system-s390x so libguestfs
-# uses it for the s390x appliance (the system qemu-kvm is x86_64 only).
+# virt-customize requires direct backend inside a container.
+# LIBGUESTFS_HV points at qemu-system-s390x for the s390x appliance VM.
 ENV LIBGUESTFS_BACKEND=direct
-ENV LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x
+ENV LIBGUESTFS_HV=/usr/bin/qemu-system-s390x
