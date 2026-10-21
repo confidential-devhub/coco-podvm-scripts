@@ -1,9 +1,24 @@
+# Stage 0 — pull qemu binaries from Fedora 40.
+# qemu-system-s390x and qemu-s390x-static are not available in RHEL 9 repos.
+# Fedora 40 ships pre-built x86_64 binaries for both packages.  Copying them
+# here means the VM host never needs to be modified — all build work runs
+# inside this container.
+FROM registry.fedoraproject.org/fedora:40 AS fedora-qemu
+RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all
+
 FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796ec80f0ae36153be8ca0f550c68e340d8117f00193f2b224c0478b2c06bd7 as payload
 
 FROM registry.redhat.io/ubi9/ubi-init:9.8-1781514776
 
+# qemu binaries from Fedora stage — placed in /usr/local/bin so they are on
+# PATH inside the container without any VM-level install or bind-mount.
+COPY --from=fedora-qemu /usr/bin/qemu-system-s390x /usr/local/bin/qemu-system-s390x
+COPY --from=fedora-qemu /usr/bin/qemu-s390x-static  /usr/local/bin/qemu-s390x-static
+
 RUN subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)"
 
+# systemd-repart: part of the systemd package on RHEL 9 — no separate RPM
+# qemu-nbd:       bundled in qemu-img on RHEL 9 — no separate RPM
 RUN dnf install -y \
     cpio \
     jq \
@@ -12,24 +27,27 @@ RUN dnf install -y \
     libguestfs \
     guestfs-tools \
     libguestfs-tools \
+    libvirt \
     virt-install \
     nc \
     veritysetup \
-    systemd-repart \
     parted \
     e2fsprogs \
-    qemu-nbd
+    kmod
 
 # NOT included vs konflux/Dockerfile (x86_64):
 #   - systemd-ukify : UKI addon builder — not used on s390x (no EFI)
 #   - edk2-ovmf     : x86_64 EFI firmware — not used on s390x
-#   - qemu-kvm      : x86_64 KVM — not used; s390x uses qemu-system-s390x
-#                     which is bind-mounted from the host at runtime
+#   - qemu-kvm      : x86_64 KVM — not used; qemu-system-s390x is now baked
+#                     into this image via the fedora-qemu stage above
 
 COPY qemu.conf /etc/libvirt/qemu.conf
 
 COPY --from=payload /podvm-binaries.tar.gz /payload/
 COPY --from=payload /pause-bundle.tar.gz /payload/
 
-# virt-customize requires direct backend to work inside a container
+# virt-customize requires direct backend to work inside a container.
+# LIBGUESTFS_HV points at the Fedora-sourced qemu-system-s390x so libguestfs
+# uses it for the s390x appliance (the system qemu-kvm is x86_64 only).
 ENV LIBGUESTFS_BACKEND=direct
+ENV LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x

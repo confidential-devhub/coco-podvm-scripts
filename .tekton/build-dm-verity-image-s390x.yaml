@@ -111,129 +111,6 @@ spec:
         filepath="/var/workdir/rhel.iso"
         curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
         echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
-    - name: setup-cross-arch
-      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
-      computeResources:
-        limits:
-          memory: 512Mi
-        requests:
-          cpu: 250m
-          memory: 128Mi
-      script: |-
-        #!/bin/bash
-        set -euo pipefail
-
-        mkdir -p ~/.ssh
-        if [ -e "/ssh/error" ]; then
-          cat /ssh/error
-          exit 1
-        elif [ -e "/ssh/otp" ]; then
-          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
-          echo "" >> ~/.ssh/id_rsa
-        else
-          cp /ssh/id_rsa ~/.ssh
-        fi
-        chmod 0400 ~/.ssh/id_rsa
-        export SSH_HOST=$(cat /ssh/host)
-        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60"
-
-        ssh $SSH_ARGS "$SSH_HOST" bash -s << 'NODESETUP'
-          set -ex
-
-          # ── 1. qemu-system-s390x ─────────────────────────────────────────────
-          # Required by virt-install --arch s390x (Stage 1 base image build).
-          # On Fedora the RPM exists; on RHEL 9 it must be built from source
-          # (no package available). Pull the static binary from a Fedora container
-          # so this step works on both distros without a source compile.
-          if ! command -v qemu-system-s390x &>/dev/null; then
-            sudo podman run --rm -v /usr/local/bin:/out:Z \
-              registry.fedoraproject.org/fedora:40 \
-              bash -c 'dnf install -y qemu-system-s390x >/dev/null 2>&1 && \
-                       cp /usr/bin/qemu-system-s390x /out/'
-            sudo chmod 755 /usr/local/bin/qemu-system-s390x
-            sudo ln -sf /usr/local/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
-            qemu-system-s390x --version
-          else
-            echo "qemu-system-s390x already present: $(qemu-system-s390x --version | head -1)"
-          fi
-
-          # ── 2. qemu-s390x-static ─────────────────────────────────────────────
-          # Required by coco-components-s390x.sh (Stage 2): NBD mount + chroot +
-          # binfmt_misc so s390x ELF binaries (dnf, dracut, zipl) execute
-          # transparently on the x86_64 host. Must be at /usr/local/bin/.
-          if [[ ! -x /usr/local/bin/qemu-s390x-static ]]; then
-            sudo podman run --rm -v /usr/local/bin:/out:Z \
-              registry.fedoraproject.org/fedora:40 \
-              bash -c 'dnf install -y qemu-user-static-s390x >/dev/null 2>&1 && \
-                       cp /usr/bin/qemu-s390x-static /out/'
-            sudo chmod 755 /usr/local/bin/qemu-s390x-static
-            # Accept both "statically linked" (old binutils) and "static-pie linked"
-            # (modern PIE static binary from Fedora 40) — both are self-contained
-            # and compatible with binfmt_misc. See Bug 24 in the session tracker.
-            file /usr/local/bin/qemu-s390x-static | grep -qE "static(ally|-pie) linked" || \
-              { echo "ERROR: qemu-s390x-static is not statically linked"; exit 1; }
-          else
-            echo "qemu-s390x-static already present."
-          fi
-
-          # ── 3. Kernel modules ─────────────────────────────────────────────────
-          # nbd: used by verity-s390x.sh and coco-components-s390x.sh to mount
-          #      the qcow2 disk image without a running VM.
-          # binfmt_misc: filesystem required to register the qemu-s390x handler.
-          sudo modprobe nbd max_part=16 || true
-          sudo modprobe binfmt_misc     || true
-          [[ -b /dev/nbd0 ]] || { echo "ERROR: /dev/nbd0 not available after modprobe nbd"; exit 1; }
-
-          # ── 4. Restart libvirtd ───────────────────────────────────────────────
-          # libvirtd must re-probe emulators after qemu-system-s390x is installed
-          # so that virt-install can find the s390-ccw-virtio machine type.
-          sudo systemctl restart libvirtd
-          sudo virsh domcapabilities \
-            --emulatorbin /usr/local/bin/qemu-system-s390x \
-            --arch s390x --machine s390-ccw-virtio --virttype qemu \
-            | grep -q 's390x' || { echo "ERROR: libvirtd cannot see qemu-system-s390x"; exit 1; }
-
-          # ── 5. verity / disk tools ────────────────────────────────────────────
-          # veritysetup, systemd-repart, partprobe (parted), e2fsck (e2fsprogs),
-          # and qemu-nbd are required by verity-s390x.sh (pre-flight check line 589)
-          # and coco-components-s390x.sh.  On a Konflux worker these are pre-installed;
-          # on a fresh Fyre/RHEL 9 host they may be absent.  Install only what is missing.
-          MISSING_PKGS=()
-          command -v veritysetup    &>/dev/null || MISSING_PKGS+=(veritysetup)
-          command -v systemd-repart &>/dev/null || MISSING_PKGS+=(systemd-repart)
-          command -v partprobe      &>/dev/null || MISSING_PKGS+=(parted)
-          command -v e2fsck         &>/dev/null || MISSING_PKGS+=(e2fsprogs)
-          command -v qemu-nbd       &>/dev/null || MISSING_PKGS+=(qemu-nbd)
-          if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
-            echo "Installing missing verity/disk tools: ${MISSING_PKGS[*]}"
-            sudo dnf install -y "${MISSING_PKGS[@]}"
-          else
-            echo "All verity/disk tools already present."
-          fi
-
-          # ── 6. binfmt_misc registration ───────────────────────────────────────
-          # coco-components-s390x.sh registers/removes this itself per-run, but
-          # pre-registering here ensures it is present before the build step starts.
-          if [[ ! -f /proc/sys/fs/binfmt_misc/qemu-s390x ]]; then
-            echo ':qemu-s390x:M::\x7fELF\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x16:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff:/usr/local/bin/qemu-s390x-static:' \
-              | sudo tee /proc/sys/fs/binfmt_misc/register
-            echo "Registered binfmt_misc for s390x ELF."
-          else
-            echo "binfmt_misc for s390x already registered."
-          fi
-
-          echo "=== Cross-arch s390x node setup complete ==="
-          for c in qemu-system-s390x qemu-img qemu-nbd virt-install virt-customize \
-                   veritysetup systemd-repart partprobe e2fsck losetup podman jq; do
-            command -v "$c" >/dev/null && echo "OK   $c" || echo "MISS $c"
-          done
-          [[ -x /usr/local/bin/qemu-s390x-static ]] && echo "OK   qemu-s390x-static" || echo "MISS qemu-s390x-static"
-          [[ -b /dev/nbd0 ]] && echo "OK   /dev/nbd0" || echo "MISS /dev/nbd0"
-        NODESETUP
-      volumeMounts:
-        - mountPath: /ssh
-          name: ssh
-          readOnly: true
     - name: build
       image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
       computeResources:
@@ -295,32 +172,29 @@ spec:
         MEASUREMENTS=/output/qcow2/measurements.json
 
         # Build the s390x builder container from konflux/Dockerfile.s390x.
-        # Mirrors the x86_64 flow exactly: all build work runs inside the
-        # privileged container via podman exec, not on the bare VM.
-        # konflux/Dockerfile.s390x omits ukify/sbsigntools/edk2-ovmf/qemu-kvm
-        # (no EFI on s390x; qemu-system-s390x is bind-mounted from the host).
+        # All build tools (qemu-system-s390x, qemu-s390x-static, virt-install,
+        # veritysetup, kmod, etc.) are baked into the image via its Fedora 40
+        # multi-stage build — the VM host is not modified in any way.
         # Extract osc-podvm-payload digest from Dockerfile for SBOM (same as x86).
         grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile.s390x | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
           -t builder-s390x -f $BUILD_DIR/source/konflux/Dockerfile.s390x $BUILD_DIR/source
 
-        # Run the builder container daemonised (same flags as x86_64).
-        # Bind-mount the qemu binaries installed by setup-cross-arch so they
-        # are available inside the container without re-installing them.
+        # Run the builder container daemonised — identical pattern to debug.yaml.
+        # No qemu bind-mounts needed: the binaries are inside the image.
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
           -v /lib/modules:/lib/modules:ro,Z \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
-          --mount type=bind,source=/usr/local/bin/qemu-system-s390x,target=/usr/local/bin/qemu-system-s390x \
-          --mount type=bind,source=/usr/local/bin/qemu-s390x-static,target=/usr/local/bin/qemu-s390x-static \
           --user 0 \
           --security-opt=apparmor=unconfined \
           --security-opt=seccomp=unconfined \
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
           --env=LIBGUESTFS_BACKEND=direct \
+          --env=LIBGUESTFS_HV=/usr/local/bin/qemu-system-s390x \
           builder-s390x
 
         time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
