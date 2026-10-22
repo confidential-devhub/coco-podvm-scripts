@@ -235,7 +235,8 @@ spec:
           --env=LIBGUESTFS_HV=/usr/bin/qemu-system-s390x \
           builder-s390x
 
-        time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
+        # Stage 1 calls qemu-system-s390x directly (no libvirt) on x86,
+        # so no virsh/libvirtd wait is needed before it.
 
         # Stage 1: build s390x base qcow2 image (inside container).
         #
