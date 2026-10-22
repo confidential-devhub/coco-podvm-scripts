@@ -1,23 +1,11 @@
-# Stage 0 — Fedora 40 stage: source of qemu-system-s390x + its runtime libs.
-#
 # WHY Fedora 40 and not RHEL 9:
 #   qemu-system-s390x is not available in any RHEL 9 repo (the QEMU cross-arch
 #   emulator targets are Fedora-only).  The Fedora 40 binary is dynamically
-#   linked against glibc 2.39 and other Fedora-versioned libs.  Copying just
-#   the binary into a UBI9 container (glibc 2.34) causes the capability probe
-#   that libvirt runs at startup ("qemu-system-s390x -machine none,accel=tcg")
-#   to fail with "GLIBC_2.38 not found", so libvirt records NO capabilities
-#   for s390x and rejects virt-install with:
-#     "Host does not support any virtualization options for architecture 's390x'"
-#
-# SOLUTION: use Fedora 40 as the full builder base — all tools that need to
-#   interact with the Fedora qemu binary (libvirt, virt-install, libguestfs)
-#   run on the same glibc version as the binary itself.
-#
-# qemu-s390x-static is statically linked (static-pie) — it has no glibc
-#   dependency and can safely be copied into any container.
-FROM registry.fedoraproject.org/fedora:40 AS fedora-qemu
-RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all
+#   linked against glibc 2.39, so it must run on a Fedora 40 base.  The
+#   qemu-system-s390x RPM also ships the s390x IPL firmware
+#   (/usr/share/qemu/s390-ccw.img); copying only the binary out of another
+#   stage makes QEMU fail with "could not find stage1 bootloader".  Both are
+#   therefore installed straight from the RPM in the main stage below.
 
 FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796ec80f0ae36153be8ca0f550c68e340d8117f00193f2b224c0478b2c06bd7 as payload
 
@@ -41,11 +29,15 @@ RUN subscription-manager register \
         --org "$(cat /activation-key/org)" \
         --activationkey "$(cat /activation-key/activationkey)"
 
-# qemu-system-s390x: Stage 1 direct kernel boot + Stage 3 zipl VM.
-# qemu-s390x-static: Stage 2 binfmt_misc chroot execution of s390x ELFs.
-# Both from the fedora-qemu stage — same Fedora 40 glibc as the base.
-COPY --from=fedora-qemu /usr/bin/qemu-system-s390x /usr/bin/qemu-system-s390x
-COPY --from=fedora-qemu /usr/bin/qemu-s390x-static  /usr/local/bin/qemu-s390x-static
+# qemu-system-s390x: Stage 1 direct kernel boot + Stage 3 zipl VM.  Installed
+#   from the RPM (not a bare binary copy) so the firmware in /usr/share/qemu
+#   (s390-ccw.img stage-1 IPL loader) and runtime libs come with it.
+# qemu-user-static-s390x: provides qemu-s390x-static for Stage 2 binfmt_misc
+#   chroot execution of s390x ELFs.  The RPM installs it in /usr/bin; the
+#   scripts (coco-components-s390x.sh) expect /usr/local/bin, so symlink it.
+RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all \
+    && ln -sf /usr/bin/qemu-s390x-static /usr/local/bin/qemu-s390x-static \
+    && test -f /usr/share/qemu/s390-ccw.img
 
 # Build tools:
 #   qemu-img        : qcow2 creation + inspection; also provides qemu-nbd binary

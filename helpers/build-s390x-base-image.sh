@@ -248,17 +248,44 @@ else
     # ── Step 2: extract kernel + initrd from the ISO ─────────────────────────
     # virt-install --location does exactly this: copies kernel.img and
     # initrd.img out of the ISO's images/cdboot/ (s390x installer boot path).
+    #
+    # RHEL 10 s390x DVD ISO boot directory discovery:
+    #   Primary:  images/cdboot/kernel.img + initrd.img
+    #   Fallback: images/kernel.img + initrd.img
+    # Print the full ISO images/ tree so failures are immediately diagnosable.
+    echo "--- ISO boot directory layout (images/) ---"
+    find "$ISO_MOUNT/images" -maxdepth 2 2>/dev/null | sort || true
+    echo "---"
+
     BOOT_DIR="$ISO_MOUNT/images/cdboot"
     if [[ ! -d "$BOOT_DIR" ]]; then
-        # Fallback: some RHEL ISO layouts use generic.ins pointer file
+        echo "WARNING: images/cdboot/ not found — falling back to images/"
         BOOT_DIR="$ISO_MOUNT/images"
     fi
+
+    echo "Using BOOT_DIR: $BOOT_DIR"
+    echo "  kernel.img: $(ls -lh "$BOOT_DIR/kernel.img" 2>/dev/null || echo 'NOT FOUND')"
+    echo "  initrd.img: $(ls -lh "$BOOT_DIR/initrd.img" 2>/dev/null || echo 'NOT FOUND')"
+
+    if [[ ! -f "$BOOT_DIR/kernel.img" ]]; then
+        echo "ERROR: kernel.img not found in $BOOT_DIR" >&2
+        echo "  Full ISO images/ tree:" >&2
+        find "$ISO_MOUNT/images" 2>/dev/null | sort >&2
+        exit 1
+    fi
+    if [[ ! -f "$BOOT_DIR/initrd.img" ]]; then
+        echo "ERROR: initrd.img not found in $BOOT_DIR" >&2
+        exit 1
+    fi
+
     KS_INITRD_DIR=$(mktemp -d /tmp/ks-initrd.XXXXXX)
-    # Extract kernel
     KERNEL_IMG="$KS_INITRD_DIR/kernel.img"
     INITRD_IMG="$KS_INITRD_DIR/initrd.img"
     cp "$BOOT_DIR/kernel.img" "$KERNEL_IMG"
     cp "$BOOT_DIR/initrd.img" "$INITRD_IMG"
+
+    echo "Copied kernel: $(ls -lh "$KERNEL_IMG") — $(file "$KERNEL_IMG" | cut -d: -f2-)"
+    echo "Copied initrd: $(ls -lh "$INITRD_IMG")"
 
     # ── Step 3: inject kickstart into initrd ─────────────────────────────────
     # virt-install --initrd-inject appends a cpio archive containing the
@@ -278,6 +305,13 @@ else
     #   -serial mon:stdio          Anaconda console on stdout; also monitor
     #   -drive file=,if=none,...   virtio-blk disks attached via device below
     #   -device virtio-blk-ccw    s390x virtio block device (CCW channel)
+    #   -netdev user/-device virtio-net-ccw
+    #                              NAT NIC (DHCP+DNS via the host).  REQUIRED:
+    #                              kickstart %post runs `subscription-manager
+    #                              register` under `%post --erroronfail`.  With
+    #                              no NIC it fails ("Name or service not known"),
+    #                              Anaconda stops at "Press ENTER to exit" and,
+    #                              with no stdin, waits forever.
     #   -kernel/-initrd/-append    direct-kernel boot with injected kickstart
     #
     # The kernel cmdline mirrors what build-s390x-base-image.sh passes via
@@ -297,6 +331,8 @@ else
         -device "virtio-blk-ccw,drive=drive-vda,id=vda" \
         -drive "file=${ISO_PATH},if=none,id=drive-vdb,format=raw,readonly=on,cache=none" \
         -device "virtio-blk-ccw,drive=drive-vdb,id=vdb" \
+        -netdev user,id=net0 \
+        -device virtio-net-ccw,netdev=net0 \
         -kernel "$KERNEL_IMG" \
         -initrd "$INITRD_IMG" \
         -append "console=ttysclp0 inst.repo=hd:LABEL=${ISO_LABEL}:/ inst.ks=file:/$(basename "$KS_FILE") inst.ks.org_id=${ORG_ID} inst.ks.activation_key=${ACTIVATION_KEY} inst.text quiet" \

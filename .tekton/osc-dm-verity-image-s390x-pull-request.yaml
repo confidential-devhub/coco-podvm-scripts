@@ -44,6 +44,13 @@ spec:
               memory: 8Gi
             limits:
               memory: 8Gi
+  # The cluster default PipelineRun timeout (not the per-task `timeout` in
+  # build-pipeline-s390x.yaml) is what killed the TCG-emulated build at ~2h.
+  # The per-task timeout cannot outlive the PipelineRun, so set both here.
+  timeouts:
+    pipeline: "8h0m0s"
+    tasks: "7h30m0s"
+    finally: "0h30m0s"
   pipelineRef:
     name: build-pipeline-s390x
   taskRunTemplate:

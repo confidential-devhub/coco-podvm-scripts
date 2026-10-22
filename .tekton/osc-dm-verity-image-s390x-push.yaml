@@ -37,6 +37,12 @@ spec:
               memory: 8Gi
             limits:
               memory: 8Gi
+  # See osc-dm-verity-image-s390x-pull-request.yaml: the PipelineRun-level
+  # timeout must cover the whole TCG-emulated build.
+  timeouts:
+    pipeline: "8h0m0s"
+    tasks: "7h30m0s"
+    finally: "0h30m0s"
   pipelineRef:
     name: build-pipeline-s390x
   taskRunTemplate:

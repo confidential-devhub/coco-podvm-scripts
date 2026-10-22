@@ -185,7 +185,7 @@ spec:
     - name: netrc
       workspace: netrc
   - name: build-vm-image
-    timeout: "3h0m00s"
+    timeout: "6h0m00s"
     matrix:
       params:
       - name: PLATFORM
