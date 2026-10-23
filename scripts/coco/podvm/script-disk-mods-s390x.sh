@@ -45,6 +45,18 @@ rpm -qa "kernel-*" \
     | grep -E "^kernel-" \
     | xargs -r rpm -e --nodeps || true
 
+# The pinned kernel MUST be present now.  The install above is '|| true' only
+# so an already-installed kernel is not an error; if it is genuinely absent
+# (e.g. no repos), fail here with a clear message instead of in dracut.
+if [[ ! -d "/lib/modules/${KERNEL_VERSION}.s390x" ]]; then
+    echo "ERROR: /lib/modules/${KERNEL_VERSION}.s390x missing — pinned kernel is not installed." >&2
+    echo "       Either the repos are unreachable (RHSM / DNS), or this exact version is" >&2
+    echo "       no longer served.  Versions the enabled repos offer:" >&2
+    dnf list --showduplicates kernel-core 2>&1 | tail -n 15 >&2 || true
+    echo "       Set the KERNEL_VERSION pipeline param to one of the above." >&2
+    exit 1
+fi
+
 # Regenerate initramfs for the pinned kernel.
 #
 # Two s390x-specific requirements:
@@ -205,8 +217,15 @@ if [[ -f "${PARSE_ROOT}.orig" ]]; then
     echo "parse-root.sh restored."
 fi
 
-# Update zipl boot record to reflect the pinned kernel
-zipl --verbose
+# Update zipl boot record to reflect the pinned kernel.
+# In the x86 cross-build chroot (COCO_CROSS_CHROOT=1, set by
+# coco-components-s390x.sh) zipl runs under qemu-user and segfaults (exit 139);
+# the bootmap is written by the Stage 3 s390x VM in verity-s390x.sh instead.
+if [[ -n "${COCO_CROSS_CHROOT:-}" ]]; then
+    echo "Cross-build chroot: skipping zipl (run by the Stage 3 zipl VM)."
+else
+    zipl --verbose
+fi
 
 # xmlsec1 is required by the CoCo attestation flow
 dnf install -y xmlsec1 xmlsec1-openssl

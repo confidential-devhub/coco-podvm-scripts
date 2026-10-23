@@ -22,14 +22,19 @@ else
     dnf config-manager --set-disabled "*centos*"
 fi
 
-# jq is not in RHEL 10 BaseOS/AppStream or the CentOS 10-stream mirror.
-# Install the official static s390x binary directly — no repo dependency.
+# jq is needed in the guest by create-scratch-s390x.sh.  It was not found in the
+# CentOS 10-stream mirror, so a repo install is only tried opportunistically
+# (RHSM-registered case); otherwise fall back to the official static s390x
+# binary from GitHub, which needs outbound access to github.com.
+if ! command -v jq &>/dev/null; then
+    dnf install -y jq || true
+fi
 if ! command -v jq &>/dev/null; then
     curl -fsSLo /usr/bin/jq \
         https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-s390x
     chmod +x /usr/bin/jq
-    jq --version
 fi
+jq --version
 
 # Afterburn provider check-in (Azure)
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service

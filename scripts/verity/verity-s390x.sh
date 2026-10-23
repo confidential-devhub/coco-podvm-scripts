@@ -402,7 +402,7 @@ function patch_bls_and_run_zipl()
     # root partition) that runs zipl then poweroffs when the VM boots.
     # This avoids any interactive shell — the VM boots normally via systemd,
     # the oneshot fires after basic.target, zipl writes /boot/bootmap, and
-    # poweroff -f shuts the VM down cleanly so virt-install --wait -1 returns.
+    # poweroff -f shuts the VM down cleanly so the qemu-system-s390x run returns.
     local zipl_svc="$VERITY_FOLDER/mnt/etc/systemd/system/zipl-bootmap-update.service"
     cat > "$zipl_svc" <<'EOF'
 [Unit]
@@ -414,7 +414,7 @@ ConditionPathExists=!/run/zipl-done
 Type=oneshot
 # Always poweroff after zipl, even if zipl segfaults (common under QEMU s390x
 # software emulation — qemu: uncaught target signal 11).  Without the ||, a
-# zipl segfault leaves the VM at a login prompt and virt-install --wait -1
+# zipl segfault leaves the VM at a login prompt and the qemu run
 # hangs forever, causing the cleanup block to be skipped and /.autorelabel to
 # remain in the image.  veritysetup format then hashes a vda2 that still
 # contains /.autorelabel, and every subsequent boot triggers selinux-autorelabel
@@ -440,48 +440,34 @@ EOF
     fi
     echo "Kernel version for zipl VM boot: $kver"
 
-    # QEMU runs as uid:107 (qemu user) and cannot access paths under /root.
-    # Copy kernel + initrd into /var/lib/libvirt/images/ which is group-accessible
-    # to qemu. Bind-mount the disk there (read-write) to avoid duplicating GBs.
-    local LIBVIRT_IMAGES="/var/lib/libvirt/images"
-    local zipl_disk_link="${LIBVIRT_IMAGES}/zipl-run-$$.qcow2"
-    local zipl_kernel="${LIBVIRT_IMAGES}/zipl-kernel-$$"
-    local zipl_initrd="${LIBVIRT_IMAGES}/zipl-initrd-$$.img"
+    # QEMU is launched directly (no libvirt), as root, so it can read the
+    # kernel/initrd from the work folder and open the disk read-write.
+    local zipl_kernel="${VERITY_FOLDER}/zipl-kernel-$$"
+    local zipl_initrd="${VERITY_FOLDER}/zipl-initrd-$$.img"
 
     cp "$VERITY_FOLDER/mnt/boot/vmlinuz-${kver}" "$zipl_kernel"
     cp "$VERITY_FOLDER/mnt/boot/initramfs-${kver}.img" "$zipl_initrd"
-    chmod 644 "$zipl_kernel" "$zipl_initrd"
 
     root_mounted=0
     umount "$VERITY_FOLDER/mnt"
 
-    # Bind-mount the disk so QEMU (uid:107) can open it read-write.
-    touch "$zipl_disk_link"
-    mount --bind "$DISK" "$zipl_disk_link"
-    chmod 660 "$zipl_disk_link"
-    chown root:qemu "$zipl_disk_link" 2>/dev/null || true
-
-    # Disconnect NBD before handing the disk to virt-install.
-    echo "Disconnecting NBD for virt-install zipl run ..."
+    # Disconnect NBD before handing the disk to QEMU.
+    echo "Disconnecting NBD for the zipl VM run ..."
     qemu-nbd --disconnect "$NBD_DEVICE"
     nbd_mounted=0
     udevadm settle
     sleep 2
 
-    # Run zipl inside the guest via virt-install --import.
+    # Run zipl inside the guest via a direct qemu-system-s390x boot.
     #
     # The VM boots normally via its own kernel+initrd+systemd.
     # zipl-bootmap-update.service fires after local-fs.target, runs
-    # zipl --verbose, then poweroffs. virt-install --wait -1 returns
-    # when the domain shuts off. No interactive shell, no stdin needed.
+    # zipl --verbose, then poweroffs. qemu exits when the guest powers off.
+    # No interactive shell, no stdin needed.
     #
     # root=/dev/vda2 is the raw partition — systemd-veritysetup-generator
     # won't activate dm-verity because roothash= is not on the cmdline,
     # so the partition mounts normally read-write and zipl can write bootmap.
-    # Prefer /usr/bin/qemu-system-s390x — the path libvirt probed at startup
-    # to build its capabilities XML.  command -v may resolve to the symlink
-    # target (/usr/local/bin/...) which libvirt has no capability entry for,
-    # causing "Host does not support any virtualization options for 's390x'".
     local QEMU_S390X
     if [[ -x /usr/bin/qemu-system-s390x ]]; then
         QEMU_S390X=/usr/bin/qemu-system-s390x
@@ -493,25 +479,38 @@ EOF
         exit 1
     fi
 
-    local zipl_vm_name="zipl-run-$$"
-    echo "Running zipl via virt-install --import (qemu-system-s390x) ..."
+    echo "Running zipl VM (direct qemu-system-s390x, no libvirt) ..."
     echo "  VM boots, zipl-bootmap-update.service runs zipl then poweroffs."
-    echo "  This will take several minutes under software emulation ..."
+    echo "  This will take a long time under software emulation (SELinux"
+    echo "  autorelabel runs first); capped at ${ZIPL_VM_TIMEOUT:-3h}."
 
-    virt-install \
-        --virt-type qemu \
-        --boot "emulator=${QEMU_S390X}" \
-        --osinfo detect=on,require=off \
-        --arch s390x \
-        --name "$zipl_vm_name" \
-        --memory 2048 \
-        --import \
-        --disk "path=${zipl_disk_link},format=${DISK_FORMAT},bus=virtio" \
-        --boot "kernel=${zipl_kernel},initrd=${zipl_initrd},kernel_args=console=ttysclp0 root=/dev/vda2 rw" \
-        --nographics \
-        --noautoconsole \
-        --wait -1 \
-        --transient 2>&1 || true
+    # No NIC (-nodefaults): the zipl VM needs no network.
+    # timeout: a guest that never powers off must not hang the build forever.
+    local _qemu_rc=0
+    timeout "${ZIPL_VM_TIMEOUT:-3h}" "$QEMU_S390X" \
+        -machine s390-ccw-virtio \
+        -cpu max \
+        -m 2048M \
+        -nographic \
+        -nodefaults \
+        -serial mon:stdio \
+        -drive "file=${DISK},if=none,id=drive-vda,format=${DISK_FORMAT}" \
+        -device "virtio-blk-ccw,drive=drive-vda,id=vda" \
+        -kernel "$zipl_kernel" \
+        -initrd "$zipl_initrd" \
+        -append "console=ttysclp0 root=/dev/vda2 rw" 2>&1 \
+        || _qemu_rc=$?
+
+    # A timeout means the guest never finished (autorelabel / zipl incomplete).
+    # Hashing that root would yield a bad image, so stop.  Other non-zero exits
+    # are tolerated as before (the guest ends with 'poweroff -f').
+    if [[ $_qemu_rc -eq 124 ]]; then
+        echo "Error: zipl VM did not power off within ${ZIPL_VM_TIMEOUT:-3h}." >&2
+        rm -f "$zipl_kernel" "$zipl_initrd"
+        exit 1
+    elif [[ $_qemu_rc -ne 0 ]]; then
+        echo "Warning: zipl VM exited rc=$_qemu_rc; continuing to cleanup." >&2
+    fi
 
     # Remove the oneshot service from the image — it must not persist into
     # the final PodVM image (it would try to run zipl on every boot).
@@ -535,9 +534,8 @@ EOF
         udevadm settle; sleep 2
     fi
 
-    # Unmount the bind-mount and clean up temp files.
-    umount "$zipl_disk_link" 2>/dev/null || true
-    rm -f "$zipl_disk_link" "$zipl_kernel" "$zipl_initrd"
+    # Clean up temp files.
+    rm -f "$zipl_kernel" "$zipl_initrd"
     echo "zipl VM run complete."
 
     # Reconnect NBD for the veritysetup format step.

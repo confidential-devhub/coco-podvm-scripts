@@ -46,8 +46,9 @@ RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all \
 #   libguestfs      : Stage 3 zipl VM via LIBGUESTFS_HV wrapper
 #   guestfs-tools   : provides virt-customize (used on native s390x path)
 #   cpio            : kickstart injection into initrd (Stage 1)
-#   cryptsetup      : provides veritysetup binary (dm-verity hash partition, Stage 3)
-#                     (on Fedora 40 there is no separate 'veritysetup' package)
+#   cryptsetup      : luksFormat/luksOpen helpers
+#   veritysetup     : dm-verity hash partition (Stage 3).  On Fedora 40 this is
+#                     a SEPARATE package; 'cryptsetup' does not ship the binary
 #   parted/e2fsprogs: partprobe, e2fsck (Stage 2+3)
 #   kmod            : modprobe nbd/loop/binfmt_misc
 #   nmap-ncat       : provides /usr/bin/nc (bare 'nc' package does not exist on Fedora 40)
@@ -57,6 +58,7 @@ RUN dnf install -y \
         openssl \
         qemu-img \
         cryptsetup \
+        veritysetup \
         libguestfs \
         guestfs-tools \
         nmap-ncat \

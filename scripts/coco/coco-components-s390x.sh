@@ -71,10 +71,35 @@ export PODVM_BINARY_LOCATION
 export PAUSE_BUNDLE
 export PAUSE_BUNDLE_LOCATION
 export DEST_PATH=$ARTIFACTS_FOLDER
-"$ARTIFACTS_FOLDER/get-artifacts.sh"
+
+# The Konflux builder image already ships both tarballs in /payload (copied
+# from the payload image at build time) and has no podman, so get-artifacts.sh
+# cannot pull them.  Stage them into ARTIFACTS_FOLDER first; get-artifacts.sh
+# skips any download whose target file already exists.
+PAYLOAD_DIR=${PAYLOAD_DIR:-/payload}
+for _loc in "$PODVM_BINARY_LOCATION" "$PAUSE_BUNDLE_LOCATION"; do
+    _f=$(basename "$_loc")
+    if [[ ! -e "$ARTIFACTS_FOLDER/$_f" && -f "$PAYLOAD_DIR/$_f" ]]; then
+        echo "Using $PAYLOAD_DIR/$_f"
+        cp "$PAYLOAD_DIR/$_f" "$ARTIFACTS_FOLDER/$_f"
+    fi
+done
+
+# get-artifacts.sh ends with an '[[ -e ]] && ...' list, so its exit status is
+# non-zero when everything is already present.  Judge success by the files.
+"$ARTIFACTS_FOLDER/get-artifacts.sh" || true
 
 # Build luks-config.tar.gz from the luks-scratch tree
-"$ARTIFACTS_FOLDER/luks-scratch/build.sh"
+"$ARTIFACTS_FOLDER/luks-scratch/build.sh" || exit 1
+
+# Fail fast: a missing artifact must not let the chroot work continue and
+# silently produce an image without the CoCo components.
+for _f in podvm-binaries.tar.gz pause-bundle.tar.gz luks-config.tar.gz; do
+    if [[ ! -s "$ARTIFACTS_FOLDER/$_f" ]]; then
+        echo "ERROR: required artifact $ARTIFACTS_FOLDER/$_f is missing or empty." >&2
+        exit 1
+    fi
+done
 
 echo ""
 ls "$ARTIFACTS_FOLDER"
@@ -135,8 +160,30 @@ else
     NBD_DEVICE="/dev/nbd${NBD_DEV_COCO}"
     CHROOT_DIR=$(mktemp -d /tmp/coco-chroot.XXXXXX)
 
+    # Chroot-only tweaks that must not survive into the final image:
+    #   - /etc/resolv.conf  : the guest has no usable resolver in the chroot
+    #   - 91-zipl.install   : zipl segfaults under qemu-user (exit 139) and
+    #                         aborts every kernel rpm install/erase scriptlet.
+    #                         zipl is run for real in the Stage 3 s390x VM.
+    RESOLV_SAVED=0
+    ZIPL_MASKED=0
+    function coco_chroot_restore_guest() {
+        if [[ $ZIPL_MASKED -eq 1 ]]; then
+            rm -f "$CHROOT_DIR/etc/kernel/install.d/91-zipl.install"
+            ZIPL_MASKED=0
+        fi
+        if [[ $RESOLV_SAVED -eq 1 ]]; then
+            rm -f "$CHROOT_DIR/etc/resolv.conf"
+            if [[ -e "$CHROOT_DIR/etc/resolv.conf.coco-orig" || -L "$CHROOT_DIR/etc/resolv.conf.coco-orig" ]]; then
+                mv "$CHROOT_DIR/etc/resolv.conf.coco-orig" "$CHROOT_DIR/etc/resolv.conf"
+            fi
+            RESOLV_SAVED=0
+        fi
+    }
+
     function coco_chroot_cleanup() {
         echo "Cleaning up chroot at $CHROOT_DIR ..."
+        coco_chroot_restore_guest
         # Unmount in reverse order; ignore errors (may already be unmounted)
         for mnt in proc sys dev/pts dev run tmp; do
             umount -R "$CHROOT_DIR/$mnt" 2>/dev/null || true
@@ -200,10 +247,26 @@ else
     mount -t tmpfs tmpfs "$CHROOT_DIR/run"
     mount -t tmpfs tmpfs "$CHROOT_DIR/tmp"
 
+    # 6b. DNS inside the chroot.  The guest's /etc/resolv.conf is a dangling
+    #     symlink (-> /run/systemd/resolve/..., /run is a fresh tmpfs here), so
+    #     RHSM, dnf and curl all fail with "Name or service not known".  Borrow
+    #     the builder container's resolver config for the duration of the run.
+    if [[ -e "$CHROOT_DIR/etc/resolv.conf" || -L "$CHROOT_DIR/etc/resolv.conf" ]]; then
+        mv "$CHROOT_DIR/etc/resolv.conf" "$CHROOT_DIR/etc/resolv.conf.coco-orig"
+    fi
+    cp /etc/resolv.conf "$CHROOT_DIR/etc/resolv.conf"
+    RESOLV_SAVED=1
+
+    # 6c. Mask the zipl kernel-install hook (see comment above).  A symlink to
+    #     /dev/null in /etc overrides the vendor file in /usr/lib.
+    mkdir -p "$CHROOT_DIR/etc/kernel/install.d"
+    ln -sf /dev/null "$CHROOT_DIR/etc/kernel/install.d/91-zipl.install"
+    ZIPL_MASKED=1
+
     # 7. Copy artifact tarballs into chroot /tmp
-    cp "$ARTIFACTS_FOLDER/podvm-binaries.tar.gz" "$CHROOT_DIR/tmp/"
-    cp "$ARTIFACTS_FOLDER/pause-bundle.tar.gz"   "$CHROOT_DIR/tmp/"
-    cp "$ARTIFACTS_FOLDER/luks-config.tar.gz"    "$CHROOT_DIR/tmp/"
+    cp "$ARTIFACTS_FOLDER/podvm-binaries.tar.gz" "$CHROOT_DIR/tmp/" || exit 1
+    cp "$ARTIFACTS_FOLDER/pause-bundle.tar.gz"   "$CHROOT_DIR/tmp/" || exit 1
+    cp "$ARTIFACTS_FOLDER/luks-config.tar.gz"    "$CHROOT_DIR/tmp/" || exit 1
 
     # 8. Copy scripts into chroot /tmp (they reference each other by name)
     cp "$ARTIFACTS_FOLDER/script-disk-mods-s390x.sh" "$CHROOT_DIR/tmp/"
@@ -213,8 +276,11 @@ else
     # 9. RHSM register (if credentials supplied)
     if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then
         echo "Registering with RHSM inside chroot ..."
+        # Without registration dnf has no repos and the pinned kernel cannot be
+        # installed, so a failed register must abort the build.
         chroot "$CHROOT_DIR" subscription-manager register \
-            --org="${ORG_ID}" --activationkey="${ACTIVATION_KEY}"
+            --org="${ORG_ID}" --activationkey="${ACTIVATION_KEY}" \
+            || { echo "ERROR: RHSM registration inside chroot failed." >&2; exit 1; }
     fi
 
     # 9b. Force DNF to resolve packages for s390x, not the host arch (x86_64).
@@ -240,13 +306,18 @@ else
     echo "DNF arch override set (action=$DNF_ARCH_INJECTED):"
     grep '^arch' "$DNF_CONF" || true
 
+    # Tell the guest scripts they run under qemu-user (zipl cannot work here).
+    export COCO_CROSS_CHROOT=1
+
     # 10. Run script-disk-mods-s390x.sh inside chroot
     echo "Running script-disk-mods-s390x.sh inside chroot ..."
-    chroot "$CHROOT_DIR" bash /tmp/script-disk-mods-s390x.sh
+    chroot "$CHROOT_DIR" bash /tmp/script-disk-mods-s390x.sh \
+        || { echo "ERROR: script-disk-mods-s390x.sh failed in chroot." >&2; exit 1; }
 
     # 11. Run podvm_maker-s390x.sh inside chroot
     echo "Running podvm_maker-s390x.sh inside chroot ..."
-    chroot "$CHROOT_DIR" bash /tmp/podvm_maker-s390x.sh
+    chroot "$CHROOT_DIR" bash /tmp/podvm_maker-s390x.sh \
+        || { echo "ERROR: podvm_maker-s390x.sh failed in chroot." >&2; exit 1; }
 
     # 11b. Remove the arch override so the guest image's dnf.conf is clean at boot.
     if [[ "$DNF_ARCH_INJECTED" == "appended" ]]; then
@@ -261,7 +332,9 @@ else
         echo "root:${ROOT_PASSWORD}" | chroot "$CHROOT_DIR" chpasswd
     fi
 
-    # 13. RHSM unregister
+    # 13. RHSM unregister (needs the borrowed resolv.conf, so the guest's own
+    #     resolv.conf / kernel-install hooks are restored afterwards, in
+    #     coco_chroot_cleanup below).
     if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then
         echo "Unregistering RHSM inside chroot ..."
         chroot "$CHROOT_DIR" subscription-manager unregister || true
