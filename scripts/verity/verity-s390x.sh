@@ -482,18 +482,31 @@ EOF
     echo "Running zipl VM (direct qemu-system-s390x, no libvirt) ..."
     echo "  VM boots, zipl-bootmap-update.service runs zipl then poweroffs."
     echo "  This will take a long time under software emulation (SELinux"
-    echo "  autorelabel runs first); capped at ${ZIPL_VM_TIMEOUT:-3h}."
+    echo "  autorelabel runs first); capped at ${ZIPL_VM_TIMEOUT:-5h}."
 
     # No NIC (-nodefaults): the zipl VM needs no network.
     # timeout: a guest that never powers off must not hang the build forever.
+    #
+    # Console wiring for s390x:
+    #   s390x has no UART — the real console device is the SCLP line-mode
+    #   console (ttysclp0), exposed in QEMU as a virtio sclpconsole device.
+    #   -serial mon:stdio creates a 16550A UART which does not exist on s390x;
+    #   the production RHEL 10 kernel therefore has no console attached and
+    #   produces zero output, causing the build to hang silently until timeout.
+    #
+    #   Fix: attach a chardev stdio backend to -device sclpconsole so that
+    #   ttysclp0 output reaches stdout.  The QEMU monitor is multiplexed onto
+    #   the same chardev (signal=off prevents Ctrl-C from killing the process).
     local _qemu_rc=0
-    timeout "${ZIPL_VM_TIMEOUT:-3h}" "$QEMU_S390X" \
+    timeout "${ZIPL_VM_TIMEOUT:-5h}" "$QEMU_S390X" \
         -machine s390-ccw-virtio \
         -cpu max \
         -m 2048M \
         -nographic \
         -nodefaults \
-        -serial mon:stdio \
+        -chardev stdio,id=cdev0,mux=on,signal=off \
+        -device sclpconsole,chardev=cdev0 \
+        -mon chardev=cdev0,mode=readline \
         -drive "file=${DISK},if=none,id=drive-vda,format=${DISK_FORMAT}" \
         -device "virtio-blk-ccw,drive=drive-vda,id=vda" \
         -kernel "$zipl_kernel" \
@@ -505,7 +518,7 @@ EOF
     # Hashing that root would yield a bad image, so stop.  Other non-zero exits
     # are tolerated as before (the guest ends with 'poweroff -f').
     if [[ $_qemu_rc -eq 124 ]]; then
-        echo "Error: zipl VM did not power off within ${ZIPL_VM_TIMEOUT:-3h}." >&2
+        echo "Error: zipl VM did not power off within ${ZIPL_VM_TIMEOUT:-5h}." >&2
         rm -f "$zipl_kernel" "$zipl_initrd"
         exit 1
     elif [[ $_qemu_rc -ne 0 ]]; then
