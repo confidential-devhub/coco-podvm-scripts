@@ -1,2 +1,7 @@
 certs/
 builddir/
+# RHEL install ISOs — too large to commit
+*.iso
+
+# Bob AI assistant scratch directory
+.bob/

@@ -1,0 +1,9 @@
+[Unit]
+ConditionKernelCommandLine=
+
+[Service]
+ExecStart=
+# ExecStart can be set if a specific cloud provider check-in is required
+
+[Install]
+WantedBy=multi-user.target

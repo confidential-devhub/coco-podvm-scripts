@@ -1,0 +1,76 @@
+# WHY Fedora 40 and not RHEL 9:
+#   qemu-system-s390x is not available in any RHEL 9 repo (the QEMU cross-arch
+#   emulator targets are Fedora-only).  The Fedora 40 binary is dynamically
+#   linked against glibc 2.39, so it must run on a Fedora 40 base.  The
+#   qemu-system-s390x RPM also ships the s390x IPL firmware
+#   (/usr/share/qemu/s390-ccw.img); copying only the binary out of another
+#   stage makes QEMU fail with "could not find stage1 bootloader".  Both are
+#   therefore installed straight from the RPM in the main stage below.
+
+FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796ec80f0ae36153be8ca0f550c68e340d8117f00193f2b224c0478b2c06bd7 as payload
+
+# ── Main builder — Fedora 40 base ─────────────────────────────────────────────
+# Using Fedora 40 (not UBI9) so that qemu-system-s390x runs against the same
+# glibc (2.39) it was compiled with.  UBI9 has glibc 2.34 which is missing
+# GLIBC_2.38 symbols → libvirt capability probe fails → no s390x caps.
+#
+# Stage 1 now calls qemu-system-s390x DIRECTLY (no libvirt) so libvirtd,
+# virt-install, and systemd are no longer required in this image.  This
+# eliminates the entire class of "libvirt can't probe cross-arch emulator
+# inside a container" failures (Bugs 26, 28).
+FROM registry.fedoraproject.org/fedora:40
+
+# subscription-manager: needed inside the guest chroot (Stage 2) to register
+# the disk image with RHSM and install gated packages (afterburn, xmlsec1).
+# The pipeline mounts activation-key/ via: podman build -v .../activation-key/:/activation-key/:Z
+RUN dnf install -y subscription-manager && dnf clean all
+
+RUN subscription-manager register \
+        --org "$(cat /activation-key/org)" \
+        --activationkey "$(cat /activation-key/activationkey)"
+
+# qemu-system-s390x: Stage 1 direct kernel boot + Stage 3 zipl VM.  Installed
+#   from the RPM (not a bare binary copy) so the firmware in /usr/share/qemu
+#   (s390-ccw.img stage-1 IPL loader) and runtime libs come with it.
+# qemu-user-static-s390x: provides qemu-s390x-static for Stage 2 binfmt_misc
+#   chroot execution of s390x ELFs.  The RPM installs it in /usr/bin; the
+#   scripts (coco-components-s390x.sh) expect /usr/local/bin, so symlink it.
+RUN dnf install -y qemu-system-s390x qemu-user-static-s390x && dnf clean all \
+    && ln -sf /usr/bin/qemu-s390x-static /usr/local/bin/qemu-s390x-static \
+    && test -f /usr/share/qemu/s390-ccw.img
+
+# Build tools:
+#   qemu-img        : qcow2 creation + inspection; also provides qemu-nbd binary
+#                     (on Fedora 40 qemu-nbd is NOT a separate package — it ships
+#                     inside the qemu-img RPM)
+#   libguestfs      : Stage 3 zipl VM via LIBGUESTFS_HV wrapper
+#   guestfs-tools   : provides virt-customize (used on native s390x path)
+#   cpio            : kickstart injection into initrd (Stage 1)
+#   cryptsetup      : luksFormat/luksOpen helpers
+#   veritysetup     : dm-verity hash partition (Stage 3).  On Fedora 40 this is
+#                     a SEPARATE package; 'cryptsetup' does not ship the binary
+#   parted/e2fsprogs: partprobe, e2fsck (Stage 2+3)
+#   kmod            : modprobe nbd/loop/binfmt_misc
+#   nmap-ncat       : provides /usr/bin/nc (bare 'nc' package does not exist on Fedora 40)
+RUN dnf install -y \
+        cpio \
+        jq \
+        openssl \
+        qemu-img \
+        cryptsetup \
+        veritysetup \
+        libguestfs \
+        guestfs-tools \
+        nmap-ncat \
+        parted \
+        e2fsprogs \
+        kmod \
+    && dnf clean all
+
+COPY --from=payload /podvm-binaries.tar.gz /payload/
+COPY --from=payload /pause-bundle.tar.gz /payload/
+
+# virt-customize requires direct backend inside a container.
+# LIBGUESTFS_HV points at qemu-system-s390x for the s390x appliance VM.
+ENV LIBGUESTFS_BACKEND=direct
+ENV LIBGUESTFS_HV=/usr/bin/qemu-system-s390x
