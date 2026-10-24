@@ -494,9 +494,19 @@ EOF
     #   the production RHEL 10 kernel therefore has no console attached and
     #   produces zero output, causing the build to hang silently until timeout.
     #
-    #   Fix: attach a chardev stdio backend to -device sclpconsole so that
-    #   ttysclp0 output reaches stdout.  The QEMU monitor is multiplexed onto
-    #   the same chardev (signal=off prevents Ctrl-C from killing the process).
+    #   Fix: write QEMU output to a log file, tail -f it in the background so
+    #   the output streams through the SSH/podman pipe in real time regardless
+    #   of PTY buffering.  stdin is /dev/null so QEMU never blocks waiting for
+    #   keyboard input and the SSH keepalive traffic cannot reach the monitor.
+    local _qemu_log="${VERITY_FOLDER}/zipl-vm.log"
+    local _tail_pid=""
+    # Pre-create the log file so tail -f has something to open immediately.
+    touch "$_qemu_log"
+    # Stream the log to stdout in the background so QEMU console output
+    # appears in the Tekton/SSH log in real time, regardless of PTY buffering.
+    tail -f "$_qemu_log" &
+    _tail_pid=$!
+
     local _qemu_rc=0
     timeout "${ZIPL_VM_TIMEOUT:-5h}" "$QEMU_S390X" \
         -machine s390-ccw-virtio \
@@ -504,15 +514,20 @@ EOF
         -m 2048M \
         -nographic \
         -nodefaults \
-        -chardev stdio,id=cdev0,mux=on,signal=off \
+        -chardev "file,id=cdev0,path=${_qemu_log},append=on" \
         -device sclpconsole,chardev=cdev0 \
-        -mon chardev=cdev0,mode=readline \
         -drive "file=${DISK},if=none,id=drive-vda,format=${DISK_FORMAT}" \
         -device "virtio-blk-ccw,drive=drive-vda,id=vda" \
         -kernel "$zipl_kernel" \
         -initrd "$zipl_initrd" \
-        -append "console=ttysclp0 root=/dev/vda2 rw" 2>&1 \
+        -append "console=ttysclp0 root=/dev/vda2 rw" \
+        </dev/null 2>>"$_qemu_log" \
         || _qemu_rc=$?
+
+    # Stop the tail process; give it a moment to flush the final lines.
+    sleep 1
+    kill "$_tail_pid" 2>/dev/null || true
+    wait "$_tail_pid" 2>/dev/null || true
 
     # A timeout means the guest never finished (autorelabel / zipl incomplete).
     # Hashing that root would yield a bad image, so stop.  Other non-zero exits
