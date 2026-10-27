@@ -23,15 +23,11 @@ spec:
     - name: RHEL_IMAGE_CHECKSUM
       type: string
       description: The checksum to use for downloading the RHEL image
-      default: e15cb333529c332e76e4b1b946efe3515c99f996546675aec18e8effdf2540a5
+      default: 07560920b7f8656d4f02066ae6312f0444647e37bc6c2c151cc99ba8edbd1356
     - name: KERNEL_VERSION
       type: string
       description: The kernel version that the stock kernel included with the RHEL image will be updated to
       default: 6.12.0-211.16.1.el10_2
-    - name: NVIDIA_DRIVER_VERSION
-      type: string
-      description: The NVIDIA driver version to install
-      default: 595.58.03
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
@@ -55,8 +51,6 @@ spec:
         value: $(params.ACTIVATION_KEY)
       - name: KERNEL_VERSION
         value: $(params.KERNEL_VERSION)
-      - name: NVIDIA_DRIVER_VERSION
-        value: $(params.NVIDIA_DRIVER_VERSION)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: SBOM_TYPE
@@ -139,7 +133,7 @@ spec:
         chmod 0400 ~/.ssh/id_rsa
         export SSH_HOST=$(cat /ssh/host)
         export BUILD_DIR=$(cat /ssh/user-dir)
-        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60"
+        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10"
         mkdir -p scripts
         echo "$BUILD_DIR"
         ssh -v $SSH_ARGS "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/activation-key"
@@ -158,6 +152,7 @@ spec:
         export BUILD_DIR="$BUILD_DIR"
         export OUTPUT_IMAGE="$OUTPUT_IMAGE"
         export BUILDAH_IMAGE="$BUILDAH_IMAGE"
+        export KERNEL_VERSION="$KERNEL_VERSION"
 
         REMOTESSHEOF
 
@@ -167,17 +162,21 @@ spec:
         mkdir -p output/qcow2/
         echo "RUNNING BUILD"
 
-        # Define paths
+        # Define paths — container-internal view via -v $(pwd)/output:/output.
         DISK=/output/qcow2/disk.qcow2
-        MEASUREMENTS=/output/qcow2/measurements.json
 
+        # Build the s390x builder container from konflux/Dockerfile.s390x.
+        # All build tools (qemu-system-s390x, qemu-s390x-static, virt-install,
+        # veritysetup, kmod, etc.) are baked into the image via its Fedora 40
+        # multi-stage build — the VM host is not modified in any way.
+        # Extract osc-podvm-payload digest from Dockerfile for SBOM (same as x86).
+        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile.s390x | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
         time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
           -v $BUILD_DIR/activation-key/:/activation-key/:Z \
-          -t builder -f $BUILD_DIR/source/konflux/Dockerfile $BUILD_DIR/source
+          -t builder-s390x -f $BUILD_DIR/source/konflux/Dockerfile.s390x $BUILD_DIR/source
 
-        # Extract osc-podvm-payload digest from Dockerfile for SBOM
-        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
-
+        # Run the builder container daemonised — identical pattern to debug.yaml.
+        # No qemu bind-mounts needed: the binaries are inside the image.
         time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
           -v ${BUILD_DIR}:/workspace \
           -v $(pwd)/output:/output \
@@ -189,32 +188,91 @@ spec:
           --mount type=bind,source=/dev,target=/dev \
           --mount type=bind,source=/run/udev,target=/run/udev \
           --env=LIBGUESTFS_BACKEND=direct \
-          builder
+          --env=LIBGUESTFS_HV=/usr/bin/qemu-system-s390x \
+          builder-s390x
 
-        time sudo podman exec --latest bash -c 'until virsh list --all >/dev/null 2>&1; do sleep 2; done'
+        # Stage 1 calls qemu-system-s390x directly (no libvirt) on x86,
+        # so no virsh/libvirtd wait is needed before it.
 
-        time sudo podman exec -t --latest virt-install --virt-type qemu --cpu host-model --os-variant rhel10.0 --arch x86_64 --boot uefi --name disk --memory 8192 --location /workspace/rhel.iso --disk path=$DISK,format=qcow2,bus=scsi,size=7 --initrd-inject=/workspace/source/helpers/rhel10-dm-root.ks --nographics --extra-args 'console=ttyS0 inst.ks=file:/rhel10-dm-root.ks' --transient
+        # Stage 1: build s390x base qcow2 image (inside container).
+        #
+        # Delegate to helpers/build-s390x-base-image.sh — the validated script
+        # used for all successful manual x86 cross-builds.  Direct virt-install
+        # invocation had five bugs:
+        #
+        #   1. No --boot emulator= flag → libvirt caps check returns
+        #      "Host does not support any virtualization options for
+        #      architecture 's390x'" (libvirt only knows x86 emulators by
+        #      default; the custom qemu-system-s390x must be named explicitly).
+        #
+        #   2. --cpu host-model → meaningless/wrong for TCG (software
+        #      emulation has no host CPU model to mirror).
+        #
+        #   3. --os-variant rhel10.0 → stale flag name (current flag is
+        #      --osinfo); rhel10.0 also absent from the container's osinfo DB.
+        #
+        #   4. --disk bus=scsi → wrong for s390x; Anaconda on s390x expects
+        #      virtio-blk (bus=virtio), not virtio-scsi.
+        #
+        #   5. --location /workspace/rhel.iso (raw ISO file) → virt-install
+        #      --location requires a mounted install-tree directory, not an
+        #      .iso file.  Additionally, without inst.repo=hd:LABEL=<label>:/
+        #      dracut cannot find images/install.img (stage2 squashfs) and
+        #      loops forever.  Without inst.ks.org_id= / inst.ks.activation_key=
+        #      the kickstart %post cannot register RHSM and gated packages
+        #      (xmlsec1) are not installed.
+        #
+        # build-s390x-base-image.sh fixes all five: it loop-mounts the ISO,
+        # reads the volume label via blkid, uses --boot emulator= and
+        # --osinfo detect=on,require=off and bus=virtio, and passes full
+        # inst.repo + RHSM credentials on the kernel cmdline.
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ISO_PATH=/workspace/rhel.iso
+          export OUTPUT_DIR=/output/qcow2
+          export OUTPUT_NAME=disk.qcow2
+          export DISK_SIZE_GB=7
+          export VM_MEMORY_MB=8192
+          bash /workspace/source/helpers/build-s390x-base-image.sh
+        "
 
-        # disk modifications in registered system
-        time sudo podman exec -t --latest virt-customize \
-          --copy-in /activation-key:/tmp/ \
-          --run-command "subscription-manager register --org \$(cat /tmp/activation-key/org) --activationkey \$(cat /tmp/activation-key/activationkey)" \
-          --run /workspace/scripts/script-disk-mods.sh \
-          --run-command "subscription-manager unregister" \
-          --run-command "rm -rf /tmp/activation-key" \
-          -a $DISK
+        # Stage 2+3: install CoCo components + apply dm-verity (inside container).
+        #
+        # Delegate to scripts/create-verity-podvm-s390x.sh — the validated
+        # orchestrator used for all successful manual x86 cross-builds.
+        #
+        # Calling coco-components-s390x.sh and verity-s390x.sh directly had
+        # two bugs:
+        #
+        #   A. DISK_FORMAT not set: verity-s390x.sh line 70 exits immediately
+        #      with "DISK_FORMAT is unset" when called directly.
+        #      create-verity-podvm-s390x.sh calls get_input_img_format() which
+        #      detects the format from the disk and exports DISK_FORMAT=qcow2
+        #      before calling verity-s390x.sh.
+        #
+        #   B. LIBGUESTFS_HV wrapper not set up: create-verity-podvm-s390x.sh
+        #      writes /usr/local/bin/qemu-s390x-libguestfs-wrapper that rewrites
+        #      libguestfs's x86-only -machine q35 and -cpu flags to s390x
+        #      equivalents before exec-ing qemu-system-s390x.  Without this
+        #      wrapper the verity zipl VM boot fails with "unsupported machine
+        #      type: q35".
+        #
+        # ARTIFACTS_FOLDER, ORG_ID, ACTIVATION_KEY, KERNEL_VERSION are exported
+        # so the sub-scripts pick them up transparently.
+        # KERNEL_VERSION is forwarded so script-disk-mods-s390x.sh uses the
+        # pinned version from the Tekton param rather than auto-detecting from
+        # the image RPM DB (auto-detect is safe but verbose; pinned is explicit).
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm
+          export KERNEL_VERSION=$KERNEL_VERSION
+          bash /workspace/source/scripts/create-verity-podvm-s390x.sh $DISK
+        "
 
-        time sudo podman exec -t --latest /workspace/scripts/script-podvm-maker.sh
-
-        # debug varient is being created at this point
-
-        # Apply dm-verity
-        time sudo podman exec -t --latest /workspace/scripts/script-verity.sh $DISK
-
-        # Measure disk
-        time sudo podman exec -t --latest /workspace/scripts/podvm-measure.sh $DISK $MEASUREMENTS
-
-        # Push image
+        # Push image — pass only DISK; script-push.sh bundles disk.qcow2 +
+        # disk.qcow2.roothash. No measurements.json on s390x.
         time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
           -v $BUILD_DIR/.docker:/.docker \
           -v $(pwd)/output:/output \
@@ -222,258 +280,12 @@ spec:
           -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
           -v $BUILD_DIR/tekton-results:/tekton-results \
           "$BUILDAH_IMAGE" \
-          /script-push.sh $DISK $MEASUREMENTS
+          /script-push.sh $DISK
 
         # Copy SBOM data to BUILD_DIR for transfer back to Tekton pod
         cp -r output/rootfs $BUILD_DIR/ 2>/dev/null || true
         cp output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
 
-        REMOTESSHEOF
-
-        cat >>scripts/script-disk-mods.sh <<REMOTESSHEOF
-        #!/bin/bash
-        set -ex
-
-        dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
-        # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
-        printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
-
-        echo "removing previous kernel pkgs:" \$(rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki")
-        rpm -qa "kernel*" | grep -Ev "${KERNEL_VERSION}|^kernel-uki"  | xargs -r rpm -e --nodeps
-
-        # TODO: check if this still needed when we switch to using NVIDIA attestation RPMs.
-        dnf install -y xmlsec1 xmlsec1-openssl
-
-        ##### NVIDIA DRIVERS
-        if [ -n "${NVIDIA_DRIVER_VERSION}" ]; then
-          subscription-manager repos --enable=rhel-10-for-x86_64-supplementary-rpms
-          subscription-manager repos --enable=rhel-10-for-x86_64-extensions-rpms
-          dnf install -y --setopt=install_weak_deps=False nvidia-driver-${NVIDIA_DRIVER_VERSION} \
-              nvidia-driver-cuda-${NVIDIA_DRIVER_VERSION} \
-              nvidia-driver-libs-${NVIDIA_DRIVER_VERSION} \
-              nvidia-persistenced-${NVIDIA_DRIVER_VERSION} \
-              kmod-nvidia-open-${NVIDIA_DRIVER_VERSION}-${KERNEL_VERSION%.el*} \
-              nvidia-container-toolkit
-          dnf clean all
-
-          echo -e "blacklist nouveau\nblacklist nova_core" > /etc/modprobe.d/blacklist_nv_alt.conf
-          sed -i 's/^#no-cgroups = false/no-cgroups = true/' /etc/nvidia-container-runtime/config.toml
-
-          cat << 'EOF' > /usr/local/bin/generate-nvidia-cdi.sh
-        #!/bin/bash
-
-        # Check if NVIDIA GPU is present
-        if ! lspci | grep -i nvidia > /dev/null 2>&1; then
-            echo "No NVIDIA GPU detected, skipping NVIDIA setup" | tee /var/log/nvidia-cdi-gen.log
-            exit 0
-        fi
-
-        # Load drivers
-        nvidia-ctk -d system create-device-nodes --control-devices --load-kernel-modules
-
-        nvidia-persistenced
-
-        # Set confidential compute to ready state (non-fatal if unsupported)
-        if nvidia-smi conf-compute -srs 1 2>/dev/null; then
-            echo "Confidential Compute enabled" | tee -a /var/log/nvidia-cdi-gen.log
-        else
-            echo "Could not set Confidential Compute GPUs to Ready State" | tee -a /var/log/nvidia-cdi-gen.log
-        fi
-
-        # Generate NVIDIA CDI configuration
-        nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml >> /var/log/nvidia-cdi-gen.log 2>&1 || exit 1
-        EOF
-          chmod 755 /usr/local/bin/generate-nvidia-cdi.sh
-
-          cat <<'EOF' > /etc/systemd/system/nvidia-cdi.service
-        [Unit]
-        Description=Generate NVIDIA CDI Configuration
-        Before=kata-agent.service
-
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/local/bin/generate-nvidia-cdi.sh
-        RemainAfterExit=true
-
-        [Install]
-        WantedBy=multi-user.target
-        EOF
-          chmod 644 /etc/systemd/system/nvidia-cdi.service
-          ln -s /etc/systemd/system/nvidia-cdi.service /etc/systemd/system/multi-user.target.wants/nvidia-cdi.service
-        fi
-
-        REMOTESSHEOF
-
-        cat >>scripts/script-podvm-maker.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        DISK=/output/qcow2/disk.qcow2
-
-        root_tar_dir=/workspace/source/konflux/podvm-root
-        root_tar_file=${root_tar_dir}/podvm-root.tar.gz
-        pushd ${root_tar_dir}
-        tar -czvf ${root_tar_file} *
-        popd
-
-        virt-customize \
-          --copy-in /payload/podvm-binaries.tar.gz:/tmp/ \
-          --copy-in /payload/pause-bundle.tar.gz:/tmp/ \
-          --copy-in ${root_tar_file}:/tmp/ \
-          --run /workspace/scripts/podvm-setup.sh \
-          -a $DISK
-
-        # Extract RPM database and os-release from guest for SBOM generation
-        # RHEL 9 stores the RPM DB at /usr/lib/sysimage/rpm/
-        # /etc/os-release is a symlink; the real file is /usr/lib/os-release
-        mkdir -p /output/rootfs/usr/lib/sysimage /output/rootfs/etc
-        virt-copy-out -a $DISK /usr/lib/sysimage/rpm /output/rootfs/usr/lib/sysimage/
-        virt-copy-out -a $DISK /usr/lib/os-release /output/rootfs/etc/
-        REMOTESSHEOF
-
-        cat >>scripts/podvm-setup.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        tar -xzvf /tmp/podvm-binaries.tar.gz -C /
-        tar -xzvf /tmp/pause-bundle.tar.gz -C /
-        tar -xzvf /tmp/podvm-root.tar.gz -C /
-
-        dnf remove -y cloud-init WALinuxAgent
-
-        # fixes a failure of the podns@netns service, paths differ due to Selinux equivalency rules
-        semanage fcontext -a -t bin_t /usr/bin/ip && restorecon -v /usr/sbin/ip
-
-        # this will allow /run/issue and /run/issue.d to take precedence
-        mv /etc/issue.d /usr/lib/issue.d || true
-        rm -f /etc/issue.net
-        rm -f /etc/issue
-
-        systemctl enable luks-scratch.service
-        systemctl enable gen-issue.service
-
-        # networking fix
-        firewall-offline-cmd --zone=public --add-port=15150/tcp
-        REMOTESSHEOF
-
-        cat >>scripts/script-verity.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -ex
-
-        # Accept disk path as first argument
-        if [ -z "$1" ]; then
-          echo "Error: Disk path not provided"
-          echo "Usage: $0 <disk-path>"
-          exit 1
-        fi
-
-        DISK="$1"
-
-        ADDON_SBAT="sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
-        coco-podvm-uki-addon,1,Red Hat,coco-podvm-uki-addon,1,mailto:secalert@redhat.com"
-
-        NBD_DEVICE=/dev/nbd0
-        EFI_PN=nbd0p1
-        ROOT_PN=nbd0p2
-
-        LUKS_MINIMAL_SPACE_MB=2500
-        VERITY_MAX_SPACE_MB=512
-        DISK_FORMAT=qcow2
-
-        # Resize the disk
-        MB=$((1024 * 1024))
-        current_size=$(qemu-img info -f $DISK_FORMAT --output json $DISK | jq '."virtual-size"')
-        # new_size=$((current_size * 110 / 100)) # increase 10% for verity - obsolete
-        luks_min_space=$((LUKS_MINIMAL_SPACE_MB * MB))
-        verity_max_space=$((current_size * 7 / 100))
-        new_size=$((current_size + luks_min_space + verity_max_space))
-        rounded_size=$(((new_size + MB - 1) / MB * MB))
-        echo "Current disk size: $current_size"
-        echo "New disk size: $rounded_size"
-        qemu-img resize "$DISK" -f $DISK_FORMAT "${rounded_size}"
-
-        temp_dir=$(mktemp -d)
-        cd $temp_dir
-
-        temp_mount=$temp_dir/mnt
-        mkdir $temp_mount
-
-        modprobe nbd
-        qemu-nbd -c $NBD_DEVICE -f $DISK_FORMAT $DISK
-        udevadm settle
-        sleep 2
-
-        # Debug
-        fdisk -l $NBD_DEVICE
-
-        # call_fsck
-        fs_type=$(blkid -o value -s TYPE /dev/$ROOT_PN)
-        fsck.$fs_type -p /dev/$ROOT_PN
-
-        # update the values in the conf files
-        sed -i "s|{INSERT_HERE}|$current_size|g" /workspace/source/konflux/verity-definitions/root.conf
-        sed -i "s|{INSERT_HERE}|$verity_max_space|g" /workspace/source/konflux/verity-definitions/verity.conf
-
-        # apply_dmverity
-        # create config files and folders for systemd-repart and UKI
-        systemd-repart $NBD_DEVICE --dry-run=no --definitions=/workspace/source/konflux/verity-definitions/ --no-pager --json=pretty | jq -r '.[] | select(.type == "root-x86-64-verity") | .roothash' > roothash.txt
-        RH=$(cat roothash.txt)
-
-        partprobe $NBD_DEVICE
-        # Allow udev events to settle again after partprobe
-        udevadm settle
-        sleep 1 # Optional small sleep just in case
-
-        if [ "$RH" == "TBD" ]; then
-            echo "roothash is TBD, something went wrong. Make sure the image you are using doesn't have a /verity partition already!"
-            echo "Exiting."
-            exit 1
-        fi
-
-        # create_uki_addon
-        UKI_FOLDER=$temp_mount/EFI/Linux
-        ADDON_NAME=verity.addon.efi
-        mount /dev/$EFI_PN $temp_mount
-        efi_files=($UKI_FOLDER/*.efi)
-        # Check if any EFI files exist
-        if [[ ${#efi_files[@]} -eq 0 || ! -f "${efi_files[0]}" ]]; then
-            echo "Error: No .efi files found in $UKI_FOLDER"
-            exit 1
-        fi
-
-        # If multiple files, pick the most recent one
-        if [[ ${#efi_files[@]} -gt 1 ]]; then
-            echo "Found ${#efi_files[@]} EFI files: ${efi_files[@]}"
-            echo ""
-            echo "Current EFI fallback value (/boot/efi/EFI/redhat/BOOTX64.CSV):"
-            cat mnt/EFI/redhat/BOOTX64.CSV
-            echo ""
-            echo "Selecting the most recently modified UKI..."
-            UKI_NAME=$(ls -t "${efi_files[@]}" | head -1)
-        else
-            UKI_NAME=${efi_files[0]}
-        fi
-
-        echo "Using UKI: $UKI_NAME"
-        mkdir -p "$UKI_NAME.extra.d"
-        cd $UKI_NAME.extra.d
-        rm -f $ADDON_NAME
-
-        if [[ -n "$SB_PRIVATE_KEY" && -n "$SB_CERTIFICATE" ]]; then
-            ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
-            echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
-        fi
-        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
-        echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
-        /usr/lib/systemd/ukify inspect $ADDON_NAME
-        cd
-        umount $temp_mount
-
-        # Debug
-        fdisk -l $NBD_DEVICE
-
-        # umount
-        qemu-nbd --disconnect $NBD_DEVICE
         REMOTESSHEOF
 
         # script-push.sh script is intended run _inside_ podman on the ssh host and requires sudo
@@ -489,26 +301,43 @@ spec:
 
         # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
         cat >>scripts/script-push.sh <<'REMOTESSHEOF'
-        # This script pushes a PodVM disk image to a container registry
+        # This script pushes the s390x PodVM disk image to a container registry.
         # Arguments:
-        #   $1: DISK_PATH - Path to the qcow2 disk image
-        #   $2: MEASUREMENTS_PATH - Path to the measurements JSON file
+        #   $1: DISK_PATH - Path to the qcow2 disk image (/output/qcow2/disk.qcow2)
+        #
+        # OCI image contents (s390x):
+        #   image/podvm.qcow2  — the dm-verity protected disk image
+        #   image/roothash     — the veritysetup roothash; MUST be supplied at VM
+        #                        start time as kernel cmdline roothash=<hash>
+        # Note: measurements.json is NOT included for s390x (no OVMF/EFI/PCR).
 
-        if [ -z "$1" ] || [ -z "$2" ]; then
-          echo "Error: Disk path and measurements path not provided"
-          echo "Usage: $0 <disk-path> <measurements-path> [suffix]"
+        if [ -z "$1" ]; then
+          echo "Error: Disk path not provided"
+          echo "Usage: $0 <disk-path>"
           exit 1
         fi
 
         DISK_PATH="$1"
-        MEASUREMENTS_PATH="$2"
+        ROOTHASH_PATH="${DISK_PATH}.roothash"
 
         dnf -y install buildah skopeo pigz jq
 
         image_name="dm-verity-image"
         buildah_container=$(buildah from scratch)
         buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
-        buildah add $buildah_container "$MEASUREMENTS_PATH" image/measurements.json
+
+        # Bundle the dm-verity roothash alongside the disk image.
+        # The roothash is written by verity-s390x.sh to <disk>.roothash and MUST
+        # be supplied at VM start time as the kernel cmdline roothash= argument.
+        # Embedding it in the OCI image lets the peer-pods controller retrieve it
+        # at pod launch without re-running veritysetup.
+        if [ -f "$ROOTHASH_PATH" ]; then
+          buildah add $buildah_container "$ROOTHASH_PATH" image/roothash
+          echo "roothash bundled: $(cat $ROOTHASH_PATH)"
+        else
+          echo "ERROR: roothash file not found at $ROOTHASH_PATH"
+          exit 1
+        fi
         # Get the list of labels from the LABELS env variable and apply them to the image
         IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
         for label in "${LABEL_ARRAY[@]}"; do
@@ -517,23 +346,8 @@ spec:
           buildah config --label "$label" $buildah_container
         done
 
-        # Add PCR values as OCI manifest annotations
-        ANNOTATION_ARGS=()
-        if [ -f "$MEASUREMENTS_PATH" ]; then
-          # Extract hash algorithm and PCR values from measurements.json
-          alg=$(jq -r '.measurements | keys[0]' "$MEASUREMENTS_PATH")
-
-          # Add hash algorithm as separate annotation
-          ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.algorithm=${alg}")
-
-          # Add each PCR value as a separate annotation
-          for pcr in $(jq -r ".measurements.${alg} | keys[]" "$MEASUREMENTS_PATH"); do
-            pcr_value=$(jq -r ".measurements.${alg}.${pcr}" "$MEASUREMENTS_PATH")
-            ANNOTATION_ARGS+=(--annotation "io.github.confidential-containers.measurements.${pcr}=${pcr_value}")
-          done
-        fi
-
-        buildah commit "${ANNOTATION_ARGS[@]}" $buildah_container $image_name
+        buildah config --arch s390x --os linux $buildah_container
+        buildah commit $buildah_container $image_name
         buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
 
         MANIFEST_DIGEST=$(cat image-digest)
@@ -550,114 +364,6 @@ spec:
         echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
         REMOTESSHEOF
 
-        cat >scripts/podvm-measure.sh <<'REMOTESSHEOF'
-        #!/bin/bash
-        set -euo pipefail
-
-        # This script measures TPM PCR values from a VM disk image
-        # Arguments:
-        #   $1: DISK - Path to the qcow2 disk image to boot and measure
-        #   $2: OUTPUT_FILE - Path where to write the measurements JSON file
-
-        # Accept disk path and output file as arguments
-        if [ -z "$1" ] || [ -z "$2" ]; then
-          echo "Error: Disk path and output file not provided"
-          echo "Usage: $0 <disk-path> <output-measurements-file>"
-          exit 1
-        fi
-
-        DISK="$1"
-        OUTPUT_FILE="$2"
-
-        launch_guest() {
-          echo "Launching QEMU guest..."
-          cp /usr/share/edk2/ovmf/OVMF_CODE.fd .
-
-          /usr/libexec/qemu-kvm \
-            -machine type=q35,accel=tcg,smm=off \
-            -m 2048 \
-            -cpu max \
-            -drive file=./OVMF_CODE.fd,format=raw,if=pflash \
-            -drive file="$DISK",format=qcow2 \
-            -chardev socket,id=chrtpm,path=./vtpm/swtpm.sock \
-            -tpmdev emulator,id=tpm0,chardev=chrtpm \
-            -device tpm-tis,tpmdev=tpm0 \
-            -nographic \
-            -serial file:serial.log \
-            -monitor telnet::45454,server,nowait
-        }
-
-        # Subcommand: stop
-        stop_guest() {
-          echo "Stopping QEMU guest..."
-          echo q | nc localhost 45454
-        }
-
-        # Subcommand: swtpm
-        setup_swtpm() {
-          echo "Setting up software TPM..."
-          mkdir -p vtpm
-          swtpm socket \
-            --tpmstate dir=./vtpm \
-            --ctrl type=unixio,path=./vtpm/swtpm.sock \
-            --tpm2
-        }
-
-        # Subcommand: wait
-        wait_for_guest() {
-          echo "Waiting for guest to boot..."
-          timeout=1200
-          elapsed=0
-          touch serial.log
-          while ! grep -q "login:" serial.log; do
-            sleep 2
-            elapsed="$((elapsed + 2))"
-            if [ "$elapsed" -ge "$timeout" ]; then
-              echo "Guest failed to boot within ${timeout}s." >&2
-              exit 1
-            fi
-          done
-          echo "Guest booted correctly!"
-        }
-
-        # Subcommand: scrape
-        scrape_logs() {
-          # Extract the PCR block from the log.
-
-          # This assumes the block starts with "Detected vTPM PCR values:"
-          # and ends when a non-indented line appears.
-          pcr_block=$(sed -n '/Detected vTPM PCR values:/,/^[^[:space:]]/p' serial.log)
-
-          # detect line "sha***:"
-          alg=$(echo "$pcr_block" | grep -E "^[[:space:]]*sha.*:" | awk -F':' '{print $1}' | tr -d '[:space:]')
-          echo -n "{\"measurements\":{\"${alg}\":{"
-          # Now filter for PCRs 3, 9, 11 and 12.
-          echo "$pcr_block" | grep -E "^[[:space:]]*(3|9|11|12)[[:space:]]*:" | while read -r line; do
-            # Use awk to split the line at the colon.
-            index=$(echo "$line" | awk -F':' '{print $1}' | tr -d '[:space:]')
-            value=$(echo "$line" | awk -F':' '{print tolower($2)}' | tr -d '[:space:]')
-            echo -n "${need_sep:+,}\"pcr$(printf "%02d" "$index")\":\"$value\""
-            need_sep=1
-          done
-          echo "}}}"
-        }
-
-        # Main command dispatch
-        main() {
-            setup_swtpm &
-            launch_guest &
-            wait_for_guest
-            scrape_logs > "$OUTPUT_FILE"
-            stop_guest
-            jq -e . "$OUTPUT_FILE"
-
-            rm -f serial.log
-            rm -rf vtpm/
-        }
-
-        main "$@"
-        REMOTESSHEOF
-
         # make scripts executable and sync them to the cloud VM.
         chmod +x scripts/*.sh
         rsync -ra scripts "$SSH_HOST:$BUILD_DIR"
@@ -666,7 +372,11 @@ spec:
         ssh -v $SSH_ARGS "$SSH_HOST" $BUILD_DIR/scripts/script-build.sh
         rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/*" "/tekton/results/"
 
-        # Retrieve SBOM data from remote host
+        # Retrieve SBOM data from remote host.
+        # s390x cross-builds do not produce a rootfs directory; create an empty
+        # placeholder here (this step has bash) so the shell-less syft step
+        # still has a valid directory to scan.
+        mkdir -p /var/workdir/rootfs
         rsync -ra "$SSH_HOST:$BUILD_DIR/rootfs/" "/var/workdir/rootfs/" 2>/dev/null || true
         rsync "$SSH_HOST:$BUILD_DIR/payload-digest.txt" "/var/workdir/" 2>/dev/null || true
       volumeMounts:
@@ -677,6 +387,9 @@ spec:
           name: activation-key
     - name: sbom-syft-generate
       image: ghcr.io/anchore/syft:latest@sha256:484dc49cd5869780d8a8e1b2fa2d9381cc1388fc32caeb69e8be81e3ae08bbb1
+      # The syft image has no shell, so a `script:` (which needs /bin/bash)
+      # fails with "fork/exec /tekton/scripts/...: no such file or directory".
+      # Use command/args instead.
       command:
         - /syft
       args:
