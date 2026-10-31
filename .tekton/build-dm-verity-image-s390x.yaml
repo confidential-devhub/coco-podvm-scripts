@@ -386,7 +386,7 @@ spec:
         - mountPath: /activation-key
           name: activation-key
     - name: sbom-syft-generate
-      image: ghcr.io/anchore/syft:latest@sha256:484dc49cd5869780d8a8e1b2fa2d9381cc1388fc32caeb69e8be81e3ae08bbb1
+      image: ghcr.io/anchore/syft:latest@sha256:b83763ae05df444f7f768655ce2ea6d7c2f8280d58f9bee221a69d2971d98883
       # The syft image has no shell, so a `script:` (which needs /bin/bash)
       # fails with "fork/exec /tekton/scripts/...: no such file or directory".
       # Use command/args instead.
