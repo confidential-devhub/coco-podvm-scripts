@@ -1,0 +1,461 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: image-build, konflux
+  labels:
+    app.kubernetes.io/version: "0.1"
+    build.appstudio.redhat.com/build_type: disk-image
+  name: build-dm-verity-image-s390x
+spec:
+  description: "Build disk images for sandboxed containers"
+  params:
+    - name: OUTPUT_IMAGE
+      type: string
+      description: The output manifest list that points to the OCI artifact of the zipped image
+    - name: SOURCE_ARTIFACT
+      type: string
+    - default: activation-key
+      description: Name of secret which contains subscription activation key
+      name: ACTIVATION_KEY
+      type: string
+    - name: RHEL_IMAGE_CHECKSUM
+      type: string
+      description: The checksum to use for downloading the RHEL image
+      default: 07560920b7f8656d4f02066ae6312f0444647e37bc6c2c151cc99ba8edbd1356
+    - name: KERNEL_VERSION
+      type: string
+      description: The kernel version that the stock kernel included with the RHEL image will be updated to
+      default: 6.12.0-211.16.1.el10_2
+    - default: redhat-api-secret
+      description: Name of secret which contains the offline token for the Red Hat API
+      name: REDHAT_OFFLINE_TOKEN_SECRET
+      type: string
+    - name: LABELS
+      type: string
+      description: A comma-separated list of key=value pairs to add as labels to the built image
+  results:
+    - description: Digest of the manifest list just built
+      name: IMAGE_DIGEST
+    - description: Image repository where the built manifest list was pushed
+      name: IMAGE_URL
+    - description: Image reference (IMAGE_URL + IMAGE_DIGEST)
+      name: IMAGE_REFERENCE
+    - name: SBOM_BLOB_URL
+  stepTemplate:
+    env:
+      - name: OUTPUT_IMAGE
+        value: $(params.OUTPUT_IMAGE)
+      - name: ACTIVATION_KEY
+        value: $(params.ACTIVATION_KEY)
+      - name: KERNEL_VERSION
+        value: $(params.KERNEL_VERSION)
+      - name: BUILDAH_IMAGE
+        value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
+      - name: SBOM_TYPE
+        value: spdx
+      - name: LABELS
+        value: $(params.LABELS)
+    volumeMounts:
+      - mountPath: "/var/workdir"
+        name: workdir
+      - mountPath: "/var/lib/containers/storage"
+        name: varlibcontainers
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:4689f88dd253bd1feebf57f1a76a5a751880f739000719cd662bbdc76990a7fd
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+    - name: download-rhel-image
+      image: quay.io/konflux-ci/hermeto:0.29.0@sha256:f577e0399953471df7a9826c1550aef83d28e8b35f76dd65a193441822b629ee
+      env:
+        - name: REDHAT_OFFLINE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.REDHAT_OFFLINE_TOKEN_SECRET)
+              key: offline-token
+        - name: RHEL_IMAGE_CHECKSUM
+          value: $(params.RHEL_IMAGE_CHECKSUM)
+      script: |-
+        #!/bin/bash
+        set -euo pipefail
+
+        # Check that required variables are populated
+        if [ -z "${REDHAT_OFFLINE_TOKEN:-}" ]; then
+          echo "Error: REDHAT_OFFLINE_TOKEN is not set"
+          exit 1
+        fi
+        
+        if [ -z "${RHEL_IMAGE_CHECKSUM:-}" ]; then
+          echo "Error: RHEL_IMAGE_CHECKSUM is not set"
+          exit 1
+        fi
+        
+        echo "Using RHEL image checksum: ${RHEL_IMAGE_CHECKSUM}"
+
+        alias curl="curl --retry 5"
+        token_api_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+        download_api_url=https://api.access.redhat.com/management/v1/images/${RHEL_IMAGE_CHECKSUM}/download
+        token=$(curl "${token_api_url}" \
+            -d grant_type=refresh_token -d client_id=rhsm-api -d refresh_token="${REDHAT_OFFLINE_TOKEN}" | jq --raw-output .access_token)
+        download_url=$(curl -X 'GET' "${download_api_url}" \
+            -H "Authorization: Bearer ${token}" -H 'accept: application/json' | jq --raw-output .body.href)
+        filepath="/var/workdir/rhel.iso"
+        curl -X GET "${download_url}" -H "Authorization: Bearer ${token}" --output "${filepath}"
+        echo "${RHEL_IMAGE_CHECKSUM}" "${filepath}" | sha256sum --check
+    - name: build
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: 250m
+          memory: 128Mi
+      script: |-
+        #!/bin/bash
+        set -o verbose
+        set -eu
+        set -x
+
+        mkdir -p ~/.ssh
+        if [ -e "/ssh/error" ]; then
+          #no server could be provisioned
+          cat /ssh/error
+          exit 1
+        elif [ -e "/ssh/otp" ]; then
+          curl --cacert /ssh/otp-ca -XPOST -d @/ssh/otp $(cat /ssh/otp-server) >~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
+        else
+          cp /ssh/id_rsa ~/.ssh
+        fi
+        chmod 0400 ~/.ssh/id_rsa
+        export SSH_HOST=$(cat /ssh/host)
+        export BUILD_DIR=$(cat /ssh/user-dir)
+        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10"
+        mkdir -p scripts
+        echo "$BUILD_DIR"
+        ssh -v $SSH_ARGS "$SSH_HOST"  mkdir -p "$BUILD_DIR/workspaces" "$BUILD_DIR/scripts" "$BUILD_DIR/tmp" "$BUILD_DIR/tekton-results" "$BUILD_DIR/activation-key"
+
+        rsync -ra "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/"
+        rsync -ra /activation-key/ "$SSH_HOST:$BUILD_DIR/activation-key/"
+
+        rsync -ra "/var/workdir/rhel.iso" "$SSH_HOST:$BUILD_DIR/"
+        rsync -ra "/var/workdir/source" "$SSH_HOST:$BUILD_DIR/"
+
+        # this unquoted heredoc allows expansions for the image name
+        cat >scripts/script-build.sh <<REMOTESSHEOF
+        #!/bin/sh
+        set -ex
+
+        export BUILD_DIR="$BUILD_DIR"
+        export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+        export BUILDAH_IMAGE="$BUILDAH_IMAGE"
+        export KERNEL_VERSION="$KERNEL_VERSION"
+
+        REMOTESSHEOF
+
+        # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
+        cat >>scripts/script-build.sh <<'REMOTESSHEOF'
+
+        mkdir -p output/qcow2/
+        echo "RUNNING BUILD"
+
+        # Define paths — container-internal view via -v $(pwd)/output:/output.
+        DISK=/output/qcow2/disk.qcow2
+
+        # Build the s390x builder container from konflux/Dockerfile.s390x.
+        # All build tools (qemu-system-s390x, qemu-s390x-static, virt-install,
+        # veritysetup, kmod, etc.) are baked into the image via its Fedora 40
+        # multi-stage build — the VM host is not modified in any way.
+        # Extract osc-podvm-payload digest from Dockerfile for SBOM (same as x86).
+        grep 'osc-podvm-payload@sha256:' $BUILD_DIR/source/konflux/Dockerfile.s390x | head -1 | grep -o 'sha256:[a-f0-9]*' > output/payload-digest.txt || true
+        time sudo podman build --authfile=$BUILD_DIR/.docker/config.json \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
+          -t builder-s390x -f $BUILD_DIR/source/konflux/Dockerfile.s390x $BUILD_DIR/source
+
+        # Run the builder container daemonised — identical pattern to debug.yaml.
+        # No qemu bind-mounts needed: the binaries are inside the image.
+        time sudo podman run -d --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer \
+          -v ${BUILD_DIR}:/workspace \
+          -v $(pwd)/output:/output \
+          -v /lib/modules:/lib/modules:ro,Z \
+          -v $BUILD_DIR/activation-key/:/activation-key/:Z \
+          --user 0 \
+          --security-opt=apparmor=unconfined \
+          --security-opt=seccomp=unconfined \
+          --mount type=bind,source=/dev,target=/dev \
+          --mount type=bind,source=/run/udev,target=/run/udev \
+          --env=LIBGUESTFS_BACKEND=direct \
+          --env=LIBGUESTFS_HV=/usr/bin/qemu-system-s390x \
+          builder-s390x
+
+        # Stage 1 calls qemu-system-s390x directly (no libvirt) on x86,
+        # so no virsh/libvirtd wait is needed before it.
+
+        # Stage 1: build s390x base qcow2 image (inside container).
+        #
+        # Delegate to helpers/build-s390x-base-image.sh — the validated script
+        # used for all successful manual x86 cross-builds.  Direct virt-install
+        # invocation had five bugs:
+        #
+        #   1. No --boot emulator= flag → libvirt caps check returns
+        #      "Host does not support any virtualization options for
+        #      architecture 's390x'" (libvirt only knows x86 emulators by
+        #      default; the custom qemu-system-s390x must be named explicitly).
+        #
+        #   2. --cpu host-model → meaningless/wrong for TCG (software
+        #      emulation has no host CPU model to mirror).
+        #
+        #   3. --os-variant rhel10.0 → stale flag name (current flag is
+        #      --osinfo); rhel10.0 also absent from the container's osinfo DB.
+        #
+        #   4. --disk bus=scsi → wrong for s390x; Anaconda on s390x expects
+        #      virtio-blk (bus=virtio), not virtio-scsi.
+        #
+        #   5. --location /workspace/rhel.iso (raw ISO file) → virt-install
+        #      --location requires a mounted install-tree directory, not an
+        #      .iso file.  Additionally, without inst.repo=hd:LABEL=<label>:/
+        #      dracut cannot find images/install.img (stage2 squashfs) and
+        #      loops forever.  Without inst.ks.org_id= / inst.ks.activation_key=
+        #      the kickstart %post cannot register RHSM and gated packages
+        #      (xmlsec1) are not installed.
+        #
+        # build-s390x-base-image.sh fixes all five: it loop-mounts the ISO,
+        # reads the volume label via blkid, uses --boot emulator= and
+        # --osinfo detect=on,require=off and bus=virtio, and passes full
+        # inst.repo + RHSM credentials on the kernel cmdline.
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ISO_PATH=/workspace/rhel.iso
+          export OUTPUT_DIR=/output/qcow2
+          export OUTPUT_NAME=disk.qcow2
+          export DISK_SIZE_GB=7
+          export VM_MEMORY_MB=8192
+          bash /workspace/source/helpers/build-s390x-base-image.sh
+        "
+
+        # Stage 2+3: install CoCo components + apply dm-verity (inside container).
+        #
+        # Delegate to scripts/create-verity-podvm-s390x.sh — the validated
+        # orchestrator used for all successful manual x86 cross-builds.
+        #
+        # Calling coco-components-s390x.sh and verity-s390x.sh directly had
+        # two bugs:
+        #
+        #   A. DISK_FORMAT not set: verity-s390x.sh line 70 exits immediately
+        #      with "DISK_FORMAT is unset" when called directly.
+        #      create-verity-podvm-s390x.sh calls get_input_img_format() which
+        #      detects the format from the disk and exports DISK_FORMAT=qcow2
+        #      before calling verity-s390x.sh.
+        #
+        #   B. LIBGUESTFS_HV wrapper not set up: create-verity-podvm-s390x.sh
+        #      writes /usr/local/bin/qemu-s390x-libguestfs-wrapper that rewrites
+        #      libguestfs's x86-only -machine q35 and -cpu flags to s390x
+        #      equivalents before exec-ing qemu-system-s390x.  Without this
+        #      wrapper the verity zipl VM boot fails with "unsupported machine
+        #      type: q35".
+        #
+        # ARTIFACTS_FOLDER, ORG_ID, ACTIVATION_KEY, KERNEL_VERSION are exported
+        # so the sub-scripts pick them up transparently.
+        # KERNEL_VERSION is forwarded so script-disk-mods-s390x.sh uses the
+        # pinned version from the Tekton param rather than auto-detecting from
+        # the image RPM DB (auto-detect is safe but verbose; pinned is explicit).
+        time sudo podman exec -t --latest bash -c "
+          export ORG_ID=\$(cat /activation-key/org)
+          export ACTIVATION_KEY=\$(cat /activation-key/activationkey)
+          export ARTIFACTS_FOLDER=/workspace/source/scripts/coco/podvm
+          export KERNEL_VERSION=$KERNEL_VERSION
+          bash /workspace/source/scripts/create-verity-podvm-s390x.sh $DISK
+        "
+
+        # Push image — pass only DISK; script-push.sh bundles disk.qcow2 +
+        # disk.qcow2.roothash. No measurements.json on s390x.
+        time sudo podman run --authfile=$BUILD_DIR/.docker/config.json --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
+          -v $BUILD_DIR/.docker:/.docker \
+          -v $(pwd)/output:/output \
+          -v /var/lib/containers/storage:/var/lib/containers/storage \
+          -v $BUILD_DIR/scripts/script-push.sh:/script-push.sh \
+          -v $BUILD_DIR/tekton-results:/tekton-results \
+          "$BUILDAH_IMAGE" \
+          /script-push.sh $DISK
+
+        # Copy SBOM data to BUILD_DIR for transfer back to Tekton pod
+        cp -r output/rootfs $BUILD_DIR/ 2>/dev/null || true
+        cp output/payload-digest.txt $BUILD_DIR/ 2>/dev/null || true
+
+        REMOTESSHEOF
+
+        # script-push.sh script is intended run _inside_ podman on the ssh host and requires sudo
+        # this unquoted heredoc allows expansions for the image name
+        cat >scripts/script-push.sh <<REMOTESSHEOF
+        #!/bin/bash
+        set -ex
+
+        export OUTPUT_IMAGE="$OUTPUT_IMAGE"
+        export LABELS="$LABELS"
+
+        REMOTESSHEOF
+
+        # this quoted heredoc prevents expansions and command substitutions. the env vars are evaluated on the remote vm
+        cat >>scripts/script-push.sh <<'REMOTESSHEOF'
+        # This script pushes the s390x PodVM disk image to a container registry.
+        # Arguments:
+        #   $1: DISK_PATH - Path to the qcow2 disk image (/output/qcow2/disk.qcow2)
+        #
+        # OCI image contents (s390x):
+        #   image/podvm.qcow2  — the dm-verity protected disk image
+        #   image/roothash     — the veritysetup roothash; MUST be supplied at VM
+        #                        start time as kernel cmdline roothash=<hash>
+        # Note: measurements.json is NOT included for s390x (no OVMF/EFI/PCR).
+
+        if [ -z "$1" ]; then
+          echo "Error: Disk path not provided"
+          echo "Usage: $0 <disk-path>"
+          exit 1
+        fi
+
+        DISK_PATH="$1"
+        ROOTHASH_PATH="${DISK_PATH}.roothash"
+
+        dnf -y install buildah skopeo pigz jq
+
+        image_name="dm-verity-image"
+        buildah_container=$(buildah from scratch)
+        buildah add $buildah_container "$DISK_PATH" image/podvm.qcow2
+
+        # Bundle the dm-verity roothash alongside the disk image.
+        # The roothash is written by verity-s390x.sh to <disk>.roothash and MUST
+        # be supplied at VM start time as the kernel cmdline roothash= argument.
+        # Embedding it in the OCI image lets the peer-pods controller retrieve it
+        # at pod launch without re-running veritysetup.
+        if [ -f "$ROOTHASH_PATH" ]; then
+          buildah add $buildah_container "$ROOTHASH_PATH" image/roothash
+          echo "roothash bundled: $(cat $ROOTHASH_PATH)"
+        else
+          echo "ERROR: roothash file not found at $ROOTHASH_PATH"
+          exit 1
+        fi
+        # Get the list of labels from the LABELS env variable and apply them to the image
+        IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
+        for label in "${LABEL_ARRAY[@]}"; do
+          # Remove leading and trailing whitespace from the label
+          label=$(echo "$label" | xargs)
+          buildah config --label "$label" $buildah_container
+        done
+
+        buildah config --arch s390x --os linux $buildah_container
+        buildah commit $buildah_container $image_name
+        buildah push --digestfile image-digest --authfile /.docker/config.json --retry 10 --all $image_name $OUTPUT_IMAGE
+
+        MANIFEST_DIGEST=$(cat image-digest)
+
+        # Finally, record all that in our results
+        echo -n "$OUTPUT_IMAGE" | tee /tekton-results/IMAGE_URL
+        echo -n $MANIFEST_DIGEST | tee /tekton-results/IMAGE_DIGEST
+        # Saving also these two output in one unique variable. This task is using a matrix reference.
+        # Unfortunately it seems that in Tekton, when using a matrix, each task run is executed in isolation,
+        # and result values can't be dynamically constructed or reused across matrix combinations.
+        # In order to prevent that, we are preparing in the task itself what we'll call as `IMAGE_REFERENCE`
+        # so that we can reference that safely in the pipeline.
+        IMAGE_URL_CLEANED=$(echo -n "$OUTPUT_IMAGE" | tr -d '\n')
+        echo -n "${IMAGE_URL_CLEANED}@${MANIFEST_DIGEST}" | tee /tekton-results/IMAGE_REFERENCE
+        REMOTESSHEOF
+
+        # make scripts executable and sync them to the cloud VM.
+        chmod +x scripts/*.sh
+        rsync -ra scripts "$SSH_HOST:$BUILD_DIR"
+        rsync -ra /var/workdir/source/ "$SSH_HOST:$BUILD_DIR/workspaces/source/"
+
+        ssh -v $SSH_ARGS "$SSH_HOST" $BUILD_DIR/scripts/script-build.sh
+        rsync -ra "$SSH_HOST:$BUILD_DIR/tekton-results/*" "/tekton/results/"
+
+        # Retrieve SBOM data from remote host.
+        # s390x cross-builds do not produce a rootfs directory; create an empty
+        # placeholder here (this step has bash) so the shell-less syft step
+        # still has a valid directory to scan.
+        mkdir -p /var/workdir/rootfs
+        rsync -ra "$SSH_HOST:$BUILD_DIR/rootfs/" "/var/workdir/rootfs/" 2>/dev/null || true
+        rsync "$SSH_HOST:$BUILD_DIR/payload-digest.txt" "/var/workdir/" 2>/dev/null || true
+      volumeMounts:
+        - mountPath: /ssh
+          name: ssh
+          readOnly: true
+        - mountPath: /activation-key
+          name: activation-key
+    - name: sbom-syft-generate
+      image: ghcr.io/anchore/syft:latest@sha256:484dc49cd5869780d8a8e1b2fa2d9381cc1388fc32caeb69e8be81e3ae08bbb1
+      # The syft image has no shell, so a `script:` (which needs /bin/bash)
+      # fails with "fork/exec /tekton/scripts/...: no such file or directory".
+      # Use command/args instead.
+      command:
+        - /syft
+      args:
+        - scan
+        - dir:/var/workdir/rootfs
+        - -o
+        - spdx-json=/var/workdir/syft-sbom.json
+      volumeMounts:
+        - mountPath: /var/workdir
+          name: workdir
+    - name: sbom-generate
+      image: quay.io/konflux-ci/mobster@sha256:1374bc35c71781987cce00ef5efe2be42923f83def19b60a570e947189b90d15
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        IMAGE_URL=$(cat "$(results.IMAGE_URL.path)")
+        IMAGE_DIGEST=$(cat "$(results.IMAGE_DIGEST.path)")
+
+        SYFT_SBOM="/var/workdir/syft-sbom.json"
+        SBOM_FILE="/var/workdir/sbom.json"
+        PAYLOAD_DIGEST_FILE="/var/workdir/payload-digest.txt"
+
+        MOBSTER_ARGS=(
+          generate --output "$SBOM_FILE" oci-image
+          --from-syft "$SYFT_SBOM"
+          --image-pullspec "$IMAGE_URL"
+          --image-digest "$IMAGE_DIGEST"
+        )
+
+        if [ -f "$PAYLOAD_DIGEST_FILE" ]; then
+          PAYLOAD_DIGEST=$(tr -d '[:space:]' < "$PAYLOAD_DIGEST_FILE")
+          if [ -n "$PAYLOAD_DIGEST" ]; then
+            MOBSTER_ARGS+=(--additional-base-image "quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload:latest@${PAYLOAD_DIGEST}")
+          fi
+        fi
+
+        mobster "${MOBSTER_ARGS[@]}"
+
+    - name: upload-sbom
+      image: quay.io/konflux-ci/appstudio-utils:1610c1fc4cfc9c9053dbefc1146904a4df6659ef@sha256:90ac97b811073cb99a23232c15a08082b586c702b85da6200cf54ef505e3c50c
+      workingDir: /var/workdir
+      script: |
+        # Pre-select the correct credentials to work around cosign not supporting the containers-auth.json spec
+        mkdir -p /tmp/auth && select-oci-auth "$(cat "$(results.IMAGE_REFERENCE.path)")" > /tmp/auth/config.json
+        DOCKER_CONFIG=/tmp/auth cosign attach sbom --sbom sbom.json --type "$SBOM_TYPE" "$(cat "$(results.IMAGE_REFERENCE.path)")"
+    - name: report-sbom-url
+      image: quay.io/konflux-ci/yq:latest@sha256:15d0238843d954ee78c9c190705eb8b36f6e52c31434183c37d99a80841a635a
+      script: |
+        #!/bin/bash
+        REPO=${OUTPUT_IMAGE%:*}
+        echo "Found that ${REPO} is the repository for ${OUTPUT_IMAGE}"
+        SBOM_DIGEST=$(sha256sum sbom.json | awk '{ print $1 }')
+        echo "Found that ${SBOM_DIGEST} is the SBOM digest"
+        echo -n "${REPO}@sha256:${SBOM_DIGEST}" | tee $(results.SBOM_BLOB_URL.path)
+      workingDir: /var/workdir
+  volumes:
+    - emptyDir: {}
+      name: workdir
+    - emptyDir: {}
+      name: varlibcontainers
+    - name: ssh
+      secret:
+        optional: false
+        secretName: multi-platform-ssh-$(context.taskRun.name)
+    - name: activation-key
+      secret:
+        optional: true
+        secretName: $(params.ACTIVATION_KEY)
