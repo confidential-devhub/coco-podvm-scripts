@@ -7,7 +7,7 @@
 #   stage makes QEMU fail with "could not find stage1 bootloader".  Both are
 #   therefore installed straight from the RPM in the main stage below.
 
-FROM --platform=linux/s390x quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:e796ec80f0ae36153be8ca0f550c68e340d8117f00193f2b224c0478b2c06bd7 as payload
+FROM --platform=linux/s390x quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload@sha256:d21e3a6af89c84401e40c22fe57bd2c1400f55af7f20ae73f1543d99e407351e as payload
 
 # ── Main builder — Fedora 40 base ─────────────────────────────────────────────
 # Using Fedora 40 (not UBI9) so that qemu-system-s390x runs against the same
