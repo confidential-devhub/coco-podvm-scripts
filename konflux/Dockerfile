@@ -1,4 +1,4 @@
-FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload-v1-13@sha256:9a99070ffb173232d1ee17b8674b4dee5bf7088549ac3f2a6f7e479bcf722eec as payload
+FROM quay.io/redhat-user-workloads/ose-osc-tenant/osc-podvm-payload-v1-13@sha256:5b299ac562e0d1944dc7629ce7731af83204e8257d557616176dbaf2c34f6771 as payload
 
 FROM registry.redhat.io/ubi9/ubi-init:9.8-1781514776
 
