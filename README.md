@@ -117,3 +117,13 @@ AZURE_DEPLOYMENT_NAME:      optional  - az deployment name. Default: my-deployme
 UPLOAD_SCRIPT_LOCATION:     optional  - location of the upload-azure.sh script. Default: ./azure/upload-azure.sh
 ```
 The script will print as last line the full Azure Image ID.
+
+## Guest components
+
+The resulting image protects the pod VM on three layers: the CPU encrypts
+memory, dm-verity protects the read-only root filesystem, and a LUKS2
+partition created inside the guest at boot protects the writable container
+data.
+
+- dm-verity root: `scripts/verity/verity.sh`
+- Encrypted scratch partition: [`scripts/coco/podvm/luks-scratch/`](scripts/coco/podvm/luks-scratch/README.md)
