@@ -463,7 +463,10 @@ spec:
             ADDON_OPTIONS="--secureboot-private-key=$SB_PRIVATE_KEY --secureboot-certificate=$SB_CERTIFICATE"
             echo "Signing addon with $SB_PRIVATE_KEY and $SB_CERTIFICATE"
         fi
-        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
+        # Required for security: constrain GPT partition auto-discovery. Unlisted
+        # partition types default to "absent+unused"; root=open keeps our
+        # verity-protected root usable.
+        /usr/lib/systemd/ukify build --cmdline="roothash=$RH systemd.volatile=overlay systemd.image_policy=root=open" --output=$ADDON_NAME --sbat="$ADDON_SBAT" $ADDON_OPTIONS
         echo "Created UKI addon $UKI_NAME.extra.d/$ADDON_NAME"
         /usr/lib/systemd/ukify inspect $ADDON_NAME
         cd
