@@ -205,7 +205,7 @@ spec:
       - name: name
         value: build-dm-verity-image
       - name: bundle
-        value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-task:1.14@sha256:1950102b92d4e4a56ecee9348a0ed073687838d5b0a5a5f2c76392392b386a8c
+        value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-task:1.14@sha256:2deb2c572e00f6a394c5965e911df722891e1a1f2e823af1f146a3853faea297
       - name: kind
         value: task
   - name: build-image-index
