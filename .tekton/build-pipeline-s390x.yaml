@@ -206,7 +206,7 @@ spec:
       - name: name
         value: build-dm-verity-image-s390x
       - name: bundle
-        value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-s390x-task:0.1@sha256:7554b2cea3940f57f26523a54a7e6fdf88fa709cde4ebb35091903c15f1d7013
+        value: quay.io/konflux-ci/ose-osc-tenant/build-dm-verity-image-s390x-task:0.1@sha256:b007bc380ba218bf317d8053c2a3d0e8a3a114932574a8c763738101fa9a7044
       - name: kind
         value: task
   - name: build-image-index
