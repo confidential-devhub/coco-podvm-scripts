@@ -79,11 +79,11 @@ spec:
     type: string
     description: A comma-separated list of key=value pairs to add as labels to the built image
     default: >
-      com.redhat.component=osc-dm-verity-image,
-      description=PodVM with DM-Verity support,
+      com.redhat.component=osc-dm-verity-image-s390x,
+      description=PodVM with DM-Verity support for s390x,
       distribution-scope=private,
       io.k8s.description=PodVM image for confidential computing with device mapper verity support,
-      name=openshift-sandboxed-containers/osc-dm-verity-image,
+      name=openshift-sandboxed-containers/osc-dm-verity-image-s390x-rhel9,
       cpe=cpe:/a:redhat:confidential_compute_attestation:1.140::el9,
       release=1,
       url=https://github.com/confidential-devhub/coco-podvm-scripts,
